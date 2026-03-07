@@ -2,6 +2,67 @@
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+// Foundation types
+export interface FoundationDoc {
+  name: string;
+  status: 'pending' | 'generating' | 'done' | 'error';
+  content: string;
+  desc: string;
+  type: 'doc' | 'json' | 'key' | 'angle';
+}
+
+export interface FoundationData {
+  research: FoundationDoc;
+  avatar: FoundationDoc;
+  beliefs: FoundationDoc;
+  positioning: FoundationDoc;
+  context: FoundationDoc;
+  anglesDoc: FoundationDoc;
+}
+
+export interface FoundationGenerationRequest {
+  brand: {
+    name: string;
+    category: string;
+    voice: string;
+    palette: string[];
+    product: {
+      name: string;
+      url: string;
+      promise: string;
+      offer: string;
+      visualDesc: string;
+    };
+  };
+  compliance: {
+    level: string;
+    forbidden_claims: string[];
+    disclaimer: string;
+  };
+  comp_intel?: string;
+}
+
+export interface FoundationGenerationResponse {
+  foundation: FoundationData;
+  angles: Array<{
+    name: string;
+    perf_tag: 'winner' | 'proven' | 'comp' | 'untested';
+  }>;
+}
+
+export interface CompletionStatus {
+  brandConfig: boolean;
+  foundation: boolean;
+  refs: boolean;
+  intel: boolean;
+}
+
+export interface CompletionCheckResponse {
+  completion: CompletionStatus;
+  allComplete: boolean;
+  missing: string[];
+}
+
 export interface GenerateBatchRequest {
   project: {
     brand: {
@@ -104,6 +165,28 @@ export const api = {
         project: request.project,
         batch_config: request.batch_config,
       }),
+    });
+  },
+
+  async generateFoundation(request: FoundationGenerationRequest): Promise<FoundationGenerationResponse> {
+    return fetchJson(`${API_BASE_URL}/foundation/generate`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+
+  async checkCompletion(project: {
+    id: string;
+    name: string;
+    status: string;
+    brand: FoundationGenerationRequest["brand"];
+    compliance: FoundationGenerationRequest["compliance"];
+    foundation?: FoundationData;
+    angles: Array<{ name: string; perf_tag: string }>;
+  }): Promise<CompletionCheckResponse> {
+    return fetchJson(`${API_BASE_URL}/foundation/check-completion`, {
+      method: "POST",
+      body: JSON.stringify(project),
     });
   },
 

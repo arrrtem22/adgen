@@ -1,8 +1,10 @@
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before any other imports
+
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from dotenv import load_dotenv
 import os
 import uuid
 import base64
@@ -10,14 +12,15 @@ import base64
 from models.schemas import (
     GenerateRequest, GenerateResponse, AdVariation, MockMetrics,
     ScrapeRequest, ScrapeResponse, HealthResponse,
-    Project, BatchConfig
+    Project, BatchConfig,
+    FoundationGenerationRequest, FoundationGenerationResponse,
+    FoundationData, FoundationDoc, CompletionStatus
 )
 from services.scraper import scrape_product
 from services.ad_generator import generate_ad_copy_variations
 from services.image_generator import generate_images
 from services.metrics import generate_mock_metrics, generate_metrics_for_batch, simulate_ab_test
-
-load_dotenv()
+from services.foundation_generator import generate_all_foundation
 
 app = FastAPI(
     title="AI Ad Creative Generator API",
@@ -285,6 +288,108 @@ async def serve_static(path: str):
     if os.path.exists(file_path):
         return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.post("/foundation/generate", response_model=FoundationGenerationResponse)
+async def generate_foundation(request: FoundationGenerationRequest):
+    """
+    Generate foundation documents based on brand configuration.
+    
+    This endpoint creates the core foundation documents needed for
+    ad generation: research, avatar, beliefs, positioning, context, and angles.
+    """
+    try:
+        # Convert pydantic models to dicts for the generator
+        brand_dict = request.brand.dict()
+        compliance_dict = request.compliance.dict()
+        comp_intel = request.comp_intel
+        
+        # Generate all foundation documents
+        result = generate_all_foundation(brand_dict, compliance_dict, comp_intel)
+        
+        # Convert to proper response format
+        foundation_data = result['foundation']
+        angles = result['angles']
+        
+        # Build FoundationData response
+        foundation = FoundationData(
+            research=FoundationDoc(**foundation_data['research']),
+            avatar=FoundationDoc(**foundation_data['avatar']),
+            beliefs=FoundationDoc(**foundation_data['beliefs']),
+            positioning=FoundationDoc(**foundation_data['positioning']),
+            context=FoundationDoc(**foundation_data['context']),
+            anglesDoc=FoundationDoc(**foundation_data['angles']),
+        )
+        
+        return FoundationGenerationResponse(
+            foundation=foundation,
+            angles=angles
+        )
+        
+    except Exception as e:
+        import traceback
+        print(f"Error in generate_foundation: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/foundation/check-completion")
+async def check_foundation_completion(project: Project):
+    """
+    Check completion status of all project hub steps.
+    
+    Returns which steps are complete and what's missing.
+    """
+    try:
+        completion = {
+            'brandConfig': False,
+            'foundation': False,
+            'refs': False,
+            'intel': False,
+        }
+        
+        # Check brand config
+        brand = project.brand
+        completion['brandConfig'] = bool(
+            brand.name and 
+            brand.voice and 
+            brand.product.name and 
+            brand.product.promise
+        )
+        
+        # Check foundation
+        if project.foundation:
+            foundation = project.foundation
+            docs = [
+                foundation.research,
+                foundation.avatar,
+                foundation.beliefs,
+                foundation.positioning,
+                foundation.context,
+                foundation.anglesDoc,
+            ]
+            completion['foundation'] = all(doc.status == 'done' for doc in docs)
+        
+        # Check refs (winning ads uploaded)
+        # Note: refs are typically images now in the image library
+        # For now, consider refs complete if there are angles defined
+        completion['refs'] = len(project.angles) > 0
+        
+        # Check intel
+        # This would check if comp_intel has content
+        # For now, we'll be lenient and mark as complete
+        completion['intel'] = True  # Can be enhanced later
+        
+        all_complete = all(completion.values())
+        
+        return {
+            'completion': completion,
+            'allComplete': all_complete,
+            'missing': [k for k, v in completion.items() if not v],
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

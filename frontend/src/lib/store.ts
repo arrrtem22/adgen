@@ -2,6 +2,32 @@
 
 export type ImageCategory = 'winning_ads' | 'raw_images' | 'brand_assets';
 
+// Foundation document types
+export interface FoundationDoc {
+  name: string;
+  status: 'pending' | 'generating' | 'done' | 'error';
+  content: string;
+  desc: string;
+  type: 'doc' | 'json' | 'key' | 'angle';
+}
+
+export interface FoundationData {
+  research: FoundationDoc;
+  avatar: FoundationDoc;
+  beliefs: FoundationDoc;
+  positioning: FoundationDoc;
+  context: FoundationDoc;
+  anglesDoc: FoundationDoc;
+}
+
+// Completion tracking for project hub steps
+export interface CompletionStatus {
+  brandConfig: boolean;
+  foundation: boolean;
+  refs: boolean;
+  intel: boolean;
+}
+
 export interface LibraryImage {
   id: string;
   name: string;
@@ -96,6 +122,8 @@ export interface Project {
   angles: Angle[];
   formats: FormatDoc[];
   batchCount: number;
+  foundation: FoundationData;
+  completion: CompletionStatus;
 }
 
 export interface AppState {
@@ -105,7 +133,59 @@ export interface AppState {
   imageLibrary: LibraryImage[];
 }
 
-const KEY = 'adgen_state';
+const KEY = 'adgen_state_v2';  // Version bumped for foundation/completion fields
+
+export const DEFAULT_FOUNDATION: FoundationData = {
+  research: {
+    name: 'research.md',
+    status: 'pending',
+    content: '',
+    desc: 'market landscape, product facts, ICP demographics',
+    type: 'doc',
+  },
+  avatar: {
+    name: 'avatar.md',
+    status: 'pending',
+    content: '',
+    desc: 'ICP profile with emotional states per angle',
+    type: 'doc',
+  },
+  beliefs: {
+    name: 'beliefs.md',
+    status: 'pending',
+    content: '',
+    desc: 'belief shift map — current → desired belief per angle',
+    type: 'doc',
+  },
+  positioning: {
+    name: 'positioning.md',
+    status: 'pending',
+    content: '',
+    desc: 'core positioning + which angles it suits',
+    type: 'doc',
+  },
+  context: {
+    name: 'context.json',
+    status: 'pending',
+    content: '',
+    desc: 'compressed ICP summary — feeds all copy prompts',
+    type: 'key',
+  },
+  anglesDoc: {
+    name: 'angles.json',
+    status: 'pending',
+    content: '',
+    desc: 'angle defs + hooks + proof points — edit above',
+    type: 'angle',
+  },
+};
+
+export const DEFAULT_COMPLETION: CompletionStatus = {
+  brandConfig: false,
+  foundation: false,
+  refs: false,
+  intel: false,
+};
 
 const SEED: AppState = {
   project: {
@@ -159,6 +239,8 @@ const SEED: AppState = {
       { id: 'fmt5', name: 'Minimal Text', resolution: '1080×1080', slots: 2, chars: '30/20 ch', status: 'done' },
     ],
     batchCount: 0,
+    foundation: JSON.parse(JSON.stringify(DEFAULT_FOUNDATION)),
+    completion: JSON.parse(JSON.stringify(DEFAULT_COMPLETION)),
   },
   batch: {
     id: 'batch_1',
@@ -186,8 +268,38 @@ export const SEED_VARIANTS: Omit<Variant, 'status' | 'imageB64'>[] = [
 export function loadState(): AppState {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Merge with defaults to ensure new fields exist (state migration)
+      return {
+        ...JSON.parse(JSON.stringify(SEED)),
+        ...parsed,
+        project: {
+          ...JSON.parse(JSON.stringify(SEED)).project,
+          ...parsed.project,
+          foundation: {
+            ...JSON.parse(JSON.stringify(DEFAULT_FOUNDATION)),
+            ...(parsed.project?.foundation || {}),
+          },
+          completion: {
+            ...JSON.parse(JSON.stringify(DEFAULT_COMPLETION)),
+            ...(parsed.project?.completion || {}),
+          },
+        },
+        batch: {
+          ...JSON.parse(JSON.stringify(SEED)).batch,
+          ...(parsed.batch || {}),
+        },
+        settings: {
+          ...JSON.parse(JSON.stringify(SEED)).settings,
+          ...(parsed.settings || {}),
+        },
+        imageLibrary: parsed.imageLibrary || [],
+      };
+    }
+  } catch (e) { 
+    console.error('Error loading state:', e);
+  }
   return JSON.parse(JSON.stringify(SEED));
 }
 

@@ -32,6 +32,13 @@ class Compliance(BaseModel):
     disclaimer: str
 
 
+class CompletionStatus(BaseModel):
+    brandConfig: bool = False
+    foundation: bool = False
+    refs: bool = False
+    intel: bool = False
+
+
 class Project(BaseModel):
     id: str
     name: str
@@ -39,6 +46,8 @@ class Project(BaseModel):
     brand: BrandConfig
     compliance: Compliance
     angles: list[Angle]
+    foundation: Optional[FoundationData] = None
+    completion: Optional[CompletionStatus] = None
 
 
 class BatchConfig(BaseModel):
@@ -109,3 +118,31 @@ class ScrapeResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str = "1.0.0"
+
+
+class FoundationDoc(BaseModel):
+    name: str
+    status: str = "pending"  # pending, generating, done, error
+    content: str = ""
+    desc: str = ""
+    type: str = "doc"  # doc, json, key, angle
+
+
+class FoundationData(BaseModel):
+    research: FoundationDoc
+    avatar: FoundationDoc
+    beliefs: FoundationDoc
+    positioning: FoundationDoc
+    context: FoundationDoc
+    anglesDoc: FoundationDoc
+
+
+class FoundationGenerationRequest(BaseModel):
+    brand: BrandConfig
+    compliance: Compliance
+    comp_intel: str = ""
+
+
+class FoundationGenerationResponse(BaseModel):
+    foundation: FoundationData
+    angles: list[Angle]

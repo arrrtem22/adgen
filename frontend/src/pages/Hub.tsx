@@ -1,15 +1,24 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import AppLayout from "@/components/AppLayout";
-import { loadState, saveState, addImage, removeImage, getImagesByCategory, type AppState, type ImageCategory } from "@/lib/store";
-import { Upload, X, Image as ImageIcon } from "lucide-react";
+import { loadState, saveState, addImage, removeImage, getImagesByCategory, type AppState, type ImageCategory, type FoundationData } from "@/lib/store";
+import { api } from "@/lib/api";
+import { Upload, X, Image as ImageIcon, CheckCircle2, AlertCircle, Loader2, Sparkles, Lock, ChevronRight } from "lucide-react";
 
-type Tab = "brand" | "foundation" | "refs";
+type Tab = "brand" | "foundation" | "refs" | "intel";
 
-const tabs: { id: Tab; label: string; color: string }[] = [
-  { id: "brand", label: "Brand Config", color: "bg-primary" },
-  { id: "foundation", label: "Foundation", color: "bg-accent" },
-  { id: "refs", label: "Refs & Intel", color: "bg-warn" },
+interface TabConfig {
+  id: Tab;
+  label: string;
+  color: string;
+  step: keyof AppState["project"]["completion"];
+}
+
+const tabs: TabConfig[] = [
+  { id: "brand", label: "Brand Config", color: "bg-primary", step: "brandConfig" },
+  { id: "foundation", label: "Foundation", color: "bg-accent", step: "foundation" },
+  { id: "refs", label: "Refs", color: "bg-warn", step: "refs" },
+  { id: "intel", label: "Intel", color: "bg-cyan-400", step: "intel" },
 ];
 
 const IMAGE_CATEGORIES: { key: ImageCategory; label: string; desc: string }[] = [
@@ -17,6 +26,34 @@ const IMAGE_CATEGORIES: { key: ImageCategory; label: string; desc: string }[] = 
   { key: "winning_ads", label: "Winning Ads", desc: "High-performing competitor ads" },
   { key: "raw_images", label: "Raw Images", desc: "Unedited photos, behind-the-scenes" },
 ];
+
+// Helper to check if brand config is valid
+const isBrandConfigValid = (brand: AppState["project"]["brand"]): boolean => {
+  return !!(
+    brand.name?.trim() &&
+    brand.voice?.trim() &&
+    brand.product.name?.trim() &&
+    brand.product.promise?.trim()
+  );
+};
+
+// Helper to check if foundation is complete
+const isFoundationComplete = (foundation: FoundationData): boolean => {
+  const docs = [foundation.research, foundation.avatar, foundation.beliefs, foundation.positioning, foundation.context, foundation.anglesDoc];
+  return docs.every((doc) => doc.status === "done");
+};
+
+// Helper to check if refs are complete (have images or angles)
+const isRefsComplete = (state: AppState): boolean => {
+  const hasWinningAds = getImagesByCategory(state, "winning_ads").length > 0;
+  const hasAngles = state.project.angles.length > 0;
+  return hasWinningAds || hasAngles;
+};
+
+// Helper to check if intel is complete
+const isIntelComplete = (state: AppState): boolean => {
+  return state.project.refs.comp_intel?.trim().length > 50;
+};
 
 const Hub = () => {
   const navigate = useNavigate();
@@ -26,6 +63,44 @@ const Hub = () => {
   const [dragOver, setDragOver] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadingCategory, setUploadingCategory] = useState<ImageCategory | null>(null);
+  
+  // Foundation generation state
+  const [generatingFoundation, setGeneratingFoundation] = useState(false);
+  const [foundationError, setFoundationError] = useState<string | null>(null);
+  
+  // Completion status
+  const [completion, setCompletion] = useState({
+    brandConfig: false,
+    foundation: false,
+    refs: false,
+    intel: false,
+  });
+
+  // Update completion status whenever state changes
+  useEffect(() => {
+    const newCompletion = {
+      brandConfig: isBrandConfigValid(state.project.brand),
+      foundation: isFoundationComplete(state.project.foundation),
+      refs: isRefsComplete(state),
+      intel: isIntelComplete(state),
+    };
+    setCompletion(newCompletion);
+    
+    // Update state with new completion
+    setState((s) => ({
+      ...s,
+      project: {
+        ...s.project,
+        completion: newCompletion,
+      },
+    }));
+  }, [
+    state.project.brand,
+    state.project.foundation,
+    state.project.refs.comp_intel,
+    state.project.angles.length,
+    state.imageLibrary.length,
+  ]);
 
   const save = useCallback(() => {
     saveState(state);
@@ -85,6 +160,84 @@ const Hub = () => {
     }));
   };
 
+  // Foundation generation handler
+  const generateFoundation = async () => {
+    if (!isBrandConfigValid(state.project.brand)) {
+      setFoundationError("Please complete Brand Config first (Brand Name, Voice, Product Name, and Promise are required)");
+      setActiveTab("brand");
+      return;
+    }
+
+    setGeneratingFoundation(true);
+    setFoundationError(null);
+
+    try {
+      // Mark foundation as generating
+      setState((s) => ({
+        ...s,
+        project: {
+          ...s.project,
+          foundation: {
+            ...s.project.foundation,
+            research: { ...s.project.foundation.research, status: "generating" },
+            avatar: { ...s.project.foundation.avatar, status: "generating" },
+            beliefs: { ...s.project.foundation.beliefs, status: "generating" },
+            positioning: { ...s.project.foundation.positioning, status: "generating" },
+            context: { ...s.project.foundation.context, status: "generating" },
+            anglesDoc: { ...s.project.foundation.anglesDoc, status: "generating" },
+          },
+        },
+      }));
+
+      const response = await api.generateFoundation({
+        brand: state.project.brand,
+        compliance: state.project.compliance,
+        comp_intel: state.project.refs.comp_intel,
+      });
+
+      // Update state with generated foundation and angles
+      setState((s) => ({
+        ...s,
+        project: {
+          ...s.project,
+          foundation: response.foundation,
+          angles: response.angles.map((a) => ({ name: a.name, perf_tag: a.perf_tag })),
+        },
+      }));
+
+      saveState({
+        ...state,
+        project: {
+          ...state.project,
+          foundation: response.foundation,
+          angles: response.angles.map((a) => ({ name: a.name, perf_tag: a.perf_tag })),
+        },
+      });
+    } catch (err) {
+      console.error("Failed to generate foundation:", err);
+      setFoundationError(err instanceof Error ? err.message : "Failed to generate foundation");
+      
+      // Mark as error
+      setState((s) => ({
+        ...s,
+        project: {
+          ...s.project,
+          foundation: {
+            ...s.project.foundation,
+            research: { ...s.project.foundation.research, status: "error" },
+            avatar: { ...s.project.foundation.avatar, status: "error" },
+            beliefs: { ...s.project.foundation.beliefs, status: "error" },
+            positioning: { ...s.project.foundation.positioning, status: "error" },
+            context: { ...s.project.foundation.context, status: "error" },
+            anglesDoc: { ...s.project.foundation.anglesDoc, status: "error" },
+          },
+        },
+      }));
+    } finally {
+      setGeneratingFoundation(false);
+    }
+  };
+
   // Image library handlers
   const handleFileSelect = async (files: FileList | null, category: ImageCategory) => {
     if (!files || files.length === 0) return;
@@ -117,37 +270,99 @@ const Hub = () => {
   const perfTagLabel: Record<string, string> = { winner: "★ winner", proven: "proven", comp: "competitor ↑", untested: "untested" };
   const perfTagClass: Record<string, string> = { winner: "t-accent", proven: "t-accent", comp: "t-cyan", untested: "t-muted" };
 
+  const allComplete = completion.brandConfig && completion.foundation && completion.refs && completion.intel;
+  const missingSteps = Object.entries(completion)
+    .filter(([, v]) => !v)
+    .map(([k]) => tabs.find((t) => t.step === k)?.label || k);
+
   return (
     <AppLayout
       topbarTitle={p.name}
       topbarExtra={
-        <button
-          onClick={() => {
-            saveState(state);
-            navigate("/batch");
-          }}
-          className="text-[11px] font-semibold px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
-        >
-          → Batch Studio
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Progress indicator */}
+          <div className="hidden sm:flex items-center gap-2 mr-2">
+            {tabs.map((tab) => {
+              const isComplete = completion[tab.step];
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                    isComplete ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"
+                  }`}
+                  title={`Go to ${tab.label}`}
+                >
+                  {isComplete ? <CheckCircle2 size={10} /> : <div className={`w-2 h-2 rounded-full ${tab.color}`} />}
+                  <span className="hidden md:inline">{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          
+          {/* Batch Studio button */}
+          <button
+            onClick={() => {
+              saveState(state);
+              navigate("/batch");
+            }}
+            disabled={!allComplete}
+            className={`flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-md transition-all ${
+              allComplete
+                ? "bg-primary text-primary-foreground hover:opacity-90"
+                : "bg-muted text-muted-foreground cursor-not-allowed"
+            }`}
+            title={allComplete ? "Go to Batch Studio" : `Complete required: ${missingSteps.join(", ")}`}
+          >
+            {allComplete ? (
+              <>
+                → Batch Studio <ChevronRight size={12} />
+              </>
+            ) : (
+              <>
+                <Lock size={11} /> Complete Steps
+              </>
+            )}
+          </button>
+        </div>
       }
     >
+      {/* Warning banner if not all complete */}
+      {!allComplete && (
+        <div className="bg-warn/10 border-b border-warn/20 px-5 py-2 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-2 text-[11px] text-warn">
+            <AlertCircle size={14} />
+            <span>
+              Complete all steps to unlock Batch Studio:
+              <span className="font-semibold ml-1">{missingSteps.join(", ")}</span>
+            </span>
+          </div>
+          <div className="text-[10px] text-muted-foreground">
+            {Object.values(completion).filter(Boolean).length} / 4 complete
+          </div>
+        </div>
+      )}
+
       {/* Tab bar */}
       <div className="flex border-b border-border bg-surface px-5 shrink-0">
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-[7px] px-4 py-3 text-xs font-semibold border-b-2 transition-all select-none ${
-              activeTab === tab.id
-                ? "text-primary border-primary"
-                : "text-muted-foreground border-transparent hover:text-foreground"
-            }`}
-          >
-            <div className={`w-[5px] h-[5px] rounded-full ${tab.color}`} />
-            {tab.label}
-          </button>
-        ))}
+        {tabs.map((tab) => {
+          const isComplete = completion[tab.step];
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-[7px] px-4 py-3 text-xs font-semibold border-b-2 transition-all select-none ${
+                activeTab === tab.id
+                  ? "text-primary border-primary"
+                  : "text-muted-foreground border-transparent hover:text-foreground"
+              }`}
+            >
+              <div className={`w-[5px] h-[5px] rounded-full ${isComplete ? "bg-primary" : tab.color}`} />
+              {tab.label}
+              {isComplete && <CheckCircle2 size={10} className="text-primary ml-0.5" />}
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex-1 overflow-y-auto p-5 min-h-0">
@@ -155,10 +370,15 @@ const Hub = () => {
           <div className="animate-fi grid grid-cols-2 gap-4 max-w-5xl">
             {/* Brand panel */}
             <div className="space-y-4">
-              <Panel dotColor="bg-primary" title="Brand">
+              <Panel dotColor="bg-primary" title="Brand" extra={completion.brandConfig && <CheckBadge />}>
                 <div className="grid grid-cols-2 gap-2.5 mb-3">
-                  <Field label="Brand Name">
-                    <input value={b.name} onChange={(e) => updateBrand("name", e.target.value)} className="field-input" />
+                  <Field label="Brand Name" required>
+                    <input 
+                      value={b.name} 
+                      onChange={(e) => updateBrand("name", e.target.value)} 
+                      className={`field-input ${!b.name?.trim() ? "border-warn/50" : ""}`}
+                      placeholder="Required"
+                    />
                   </Field>
                   <Field label="Category">
                     <select value={b.category} onChange={(e) => updateBrand("category", e.target.value)} className="field-input">
@@ -168,8 +388,13 @@ const Hub = () => {
                     </select>
                   </Field>
                 </div>
-                <Field label="Brand Voice">
-                  <input value={b.voice} onChange={(e) => updateBrand("voice", e.target.value)} className="field-input" />
+                <Field label="Brand Voice" required>
+                  <input 
+                    value={b.voice} 
+                    onChange={(e) => updateBrand("voice", e.target.value)} 
+                    className={`field-input ${!b.voice?.trim() ? "border-warn/50" : ""}`}
+                    placeholder="e.g. confident, direct response, men's transformation"
+                  />
                 </Field>
                 <Field label="Palette">
                   <div className="flex gap-2 flex-wrap items-end">
@@ -197,16 +422,26 @@ const Hub = () => {
                 </Field>
               </Panel>
 
-              <Panel dotColor="bg-secondary" title="Product">
-                <Field label="Product Name">
-                  <input value={b.product.name} onChange={(e) => updateProduct("name", e.target.value)} className="field-input" />
+              <Panel dotColor="bg-secondary" title="Product" extra={b.product.name && b.product.promise ? <CheckBadge /> : null}>
+                <Field label="Product Name" required>
+                  <input 
+                    value={b.product.name} 
+                    onChange={(e) => updateProduct("name", e.target.value)} 
+                    className={`field-input ${!b.product.name?.trim() ? "border-warn/50" : ""}`}
+                    placeholder="Required"
+                  />
                 </Field>
                 <Field label="Product URL">
                   <input value={b.product.url} onChange={(e) => updateProduct("url", e.target.value)} className="field-input" />
                 </Field>
                 <div className="grid grid-cols-2 gap-2.5">
-                  <Field label="Promise">
-                    <input value={b.product.promise} onChange={(e) => updateProduct("promise", e.target.value)} className="field-input" />
+                  <Field label="Promise" required>
+                    <input 
+                      value={b.product.promise} 
+                      onChange={(e) => updateProduct("promise", e.target.value)} 
+                      className={`field-input ${!b.product.promise?.trim() ? "border-warn/50" : ""}`}
+                      placeholder="Required - key value proposition"
+                    />
                   </Field>
                   <Field label="Offer">
                     <input value={b.product.offer} onChange={(e) => updateProduct("offer", e.target.value)} className="field-input" />
@@ -285,19 +520,78 @@ const Hub = () => {
             </div>
 
             {/* Save bar */}
-            <div className="col-span-2 flex justify-end gap-2 mt-2">
-              <button onClick={() => setState(loadState())} className="text-[11px] font-semibold px-3 py-1.5 rounded-md border border-border2 text-muted-foreground hover:text-foreground transition-colors">
-                Reset
-              </button>
-              <button onClick={save} className="text-[11px] font-semibold px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity">
-                {saved ? "✓ Saved" : "Save Config"}
-              </button>
+            <div className="col-span-2 flex justify-between items-center mt-2">
+              <div className="text-[10px] text-muted-foreground">
+                {!completion.brandConfig && (
+                  <span className="text-warn flex items-center gap-1">
+                    <AlertCircle size={10} /> Complete required fields to proceed
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => setState(loadState())} className="text-[11px] font-semibold px-3 py-1.5 rounded-md border border-border2 text-muted-foreground hover:text-foreground transition-colors">
+                  Reset
+                </button>
+                <button onClick={save} className="text-[11px] font-semibold px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity">
+                  {saved ? "✓ Saved" : "Save Config"}
+                </button>
+              </div>
             </div>
           </div>
         )}
 
         {activeTab === "foundation" && (
           <div className="animate-fi space-y-4 max-w-5xl">
+            {/* Foundation generation banner */}
+            {!completion.foundation && (
+              <div className="bg-accent/10 border border-accent/20 rounded-lg p-4">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold flex items-center gap-2 text-accent">
+                      <Sparkles size={14} />
+                      Generate Foundation Documents
+                    </h3>
+                    <p className="text-[11px] text-muted-foreground mt-1 max-w-xl">
+                      Foundation documents are generated from your Brand Config. They include market research, 
+                      ideal customer profile, belief maps, and positioning strategy. These power all ad generation.
+                    </p>
+                  </div>
+                  <button
+                    onClick={generateFoundation}
+                    disabled={generatingFoundation || !completion.brandConfig}
+                    className={`flex items-center gap-1.5 text-[11px] font-semibold px-4 py-2 rounded-md transition-all ${
+                      generatingFoundation || !completion.brandConfig
+                        ? "bg-muted text-muted-foreground cursor-not-allowed"
+                        : "bg-accent text-accent-foreground hover:opacity-90"
+                    }`}
+                  >
+                    {generatingFoundation ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={12} />
+                        Generate Foundation
+                      </>
+                    )}
+                  </button>
+                </div>
+                {foundationError && (
+                  <div className="mt-3 p-2 bg-destructive/10 border border-destructive/20 rounded-md text-[10px] text-destructive">
+                    {foundationError}
+                  </div>
+                )}
+                {!completion.brandConfig && (
+                  <div className="mt-3 text-[10px] text-warn flex items-center gap-1">
+                    <AlertCircle size={10} />
+                    Complete Brand Config first (Brand Name, Voice, Product Name, Promise)
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Stats */}
             <div className="grid grid-cols-3 gap-2.5">
               <StatCard value={p.angles.length} label="Angles" color="text-primary" />
@@ -306,7 +600,7 @@ const Hub = () => {
             </div>
 
             {/* Angles */}
-            <Panel dotColor="bg-accent" title="angles.json" subtitle="★ critical — drives all copy generation">
+            <Panel dotColor="bg-accent" title="angles.json" subtitle="★ critical — drives all copy generation" extra={p.angles.length > 0 ? <CheckBadge /> : null}>
               <div className="flex flex-wrap gap-1.5 mb-3">
                 {p.angles.map((a) => (
                   <div key={a.name} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-semibold border border-border2 text-muted-foreground bg-surface2 ${a.perf_tag === "winner" ? "border-primary/25" : ""}`}>
@@ -317,6 +611,11 @@ const Hub = () => {
                     <span className={`tag ${perfTagClass[a.perf_tag]}`}>{perfTagLabel[a.perf_tag]}</span>
                   </div>
                 ))}
+                {p.angles.length === 0 && (
+                  <div className="text-[11px] text-muted-foreground italic">
+                    No angles defined. Generate Foundation to create angles from your brand config.
+                  </div>
+                )}
               </div>
               <div className="font-mono text-[9px] text-muted-foreground p-[7px_10px] bg-background rounded-md border-l-2 border-border2 leading-relaxed">
                 Winner = our data proves it. Proven = good but not top. Competitor ↑ = seen working in competitor ads. Untested = no data yet.
@@ -324,59 +623,99 @@ const Hub = () => {
             </Panel>
 
             {/* Foundation docs */}
-            <Panel dotColor="bg-secondary" title="Foundation Documents">
+            <Panel dotColor="bg-secondary" title="Foundation Documents" extra={completion.foundation ? <CheckBadge /> : null}>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { name: "research.md", status: "done", desc: "market landscape, product facts, ICP demographics" },
-                  { name: "avatar.md", status: "done", desc: "ICP profile with emotional states per angle" },
-                  { name: "beliefs.md", status: "done", desc: "belief shift map — current → desired belief per angle" },
-                  { name: "positioning.md", status: "done", desc: "core positioning + which angles it suits" },
-                  { name: "context.json", status: "key", desc: "compressed ICP summary — feeds all copy prompts" },
-                  { name: "angles.json", status: "angle", desc: "angle defs + hooks + proof points — edit above" },
+                  { key: 'research', name: "research.md", status: p.foundation.research.status, desc: "market landscape, product facts, ICP demographics" },
+                  { key: 'avatar', name: "avatar.md", status: p.foundation.avatar.status, desc: "ICP profile with emotional states per angle" },
+                  { key: 'beliefs', name: "beliefs.md", status: p.foundation.beliefs.status, desc: "belief shift map — current → desired belief per angle" },
+                  { key: 'positioning', name: "positioning.md", status: p.foundation.positioning.status, desc: "core positioning + which angles it suits" },
+                  { key: 'context', name: "context.json", status: p.foundation.context.status, desc: "compressed ICP summary — feeds all copy prompts" },
+                  { key: 'anglesDoc', name: "angles.json", status: p.foundation.anglesDoc.status, desc: "angle defs + hooks + proof points — edit above" },
                 ].map((d) => {
-                  const dotMap: Record<string, string> = { done: "bg-primary shadow-[0_0_5px_hsl(var(--primary))]", key: "bg-warn shadow-[0_0_4px_hsl(var(--warn))]", angle: "bg-accent shadow-[0_0_4px_hsl(var(--accent))]" };
-                  const tagMap: Record<string, string> = { done: "t-cyan", key: "t-warn", angle: "t-purple" };
-                  const lblMap: Record<string, string> = { done: "generic", key: "compiled", angle: "★ critical" };
+                  const getDotClass = (status: string) => {
+                    switch (status) {
+                      case 'done': return "bg-primary shadow-[0_0_5px_hsl(var(--primary))]";
+                      case 'generating': return "bg-warn animate-pulse";
+                      case 'error': return "bg-destructive";
+                      default: return "bg-muted";
+                    }
+                  };
+                  const getTagClass = (status: string) => {
+                    switch (status) {
+                      case 'done': return "t-cyan";
+                      case 'generating': return "t-warn";
+                      case 'error': return "t-destructive";
+                      default: return "t-muted";
+                    }
+                  };
+                  const getLabel = (status: string) => {
+                    switch (status) {
+                      case 'done': return "done";
+                      case 'generating': return "generating...";
+                      case 'error': return "error";
+                      default: return "pending";
+                    }
+                  };
                   return (
-                    <div key={d.name} className="bg-surface2 border border-border rounded-lg p-2.5 flex items-start gap-2">
-                      <div className={`w-[7px] h-[7px] rounded-full mt-[3px] shrink-0 ${dotMap[d.status]}`} />
+                    <div key={d.key} className="bg-surface2 border border-border rounded-lg p-2.5 flex items-start gap-2">
+                      <div className={`w-[7px] h-[7px] rounded-full mt-[3px] shrink-0 ${getDotClass(d.status)}`} />
                       <div className="flex-1 min-w-0">
                         <div className="text-[11px] font-semibold mb-0.5">{d.name}</div>
                         <div className="font-mono text-[9px] text-muted-foreground leading-relaxed">{d.desc}</div>
                       </div>
-                      <span className={`tag ${tagMap[d.status]}`}>{lblMap[d.status]}</span>
+                      <span className={`tag ${getTagClass(d.status)}`}>{getLabel(d.status)}</span>
                     </div>
                   );
                 })}
               </div>
+              
+              {/* View content buttons */}
+              {completion.foundation && (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {(['research', 'avatar', 'beliefs', 'positioning'] as const).map((docKey) => (
+                    <button
+                      key={docKey}
+                      onClick={() => {
+                        const doc = p.foundation[docKey];
+                        if (doc.content) {
+                          const blob = new Blob([doc.content], { type: 'text/markdown' });
+                          const url = URL.createObjectURL(blob);
+                          window.open(url, '_blank');
+                        }
+                      }}
+                      className="text-[10px] px-2 py-1 rounded-md border border-border hover:border-primary hover:text-primary transition-colors"
+                    >
+                      View {p.foundation[docKey].name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </Panel>
           </div>
         )}
 
         {activeTab === "refs" && (
           <div className="animate-fi space-y-5 max-w-5xl">
-            {/* Comp intel */}
-            <Panel dotColor="bg-secondary" title="Competitive Intelligence">
-              <div className="font-mono text-[9px] text-muted-foreground p-[7px_10px] bg-background rounded-md border-l-2 border-border2 leading-relaxed mb-2.5">
-                Paste winning competitor copy here. Foundation Builder uses this to identify working angles + themes in the market.
+            {/* Refs completion status */}
+            {!completion.refs && (
+              <div className="bg-warn/10 border border-warn/20 rounded-lg p-3">
+                <div className="text-[11px] text-warn flex items-center gap-2">
+                  <AlertCircle size={12} />
+                  Upload winning ads or generate Foundation to complete this step
+                </div>
               </div>
-              <textarea
-                value={state.project.refs.comp_intel}
-                onChange={(e) =>
-                  setState((s) => ({
-                    ...s,
-                    project: { ...s.project, refs: { ...s.project.refs, comp_intel: e.target.value } },
-                  }))
-                }
-                rows={4}
-                placeholder="Paste competitor hooks, winning headlines, proven copy…"
-                className="field-input"
-              />
-            </Panel>
+            )}
 
             {/* Image Library Sections */}
             {IMAGE_CATEGORIES.filter((cat) => cat.key !== "brand_assets").map((cat) => (
-              <Panel key={cat.key} dotColor={cat.key === "winning_ads" ? "bg-cyan-400" : "bg-accent"} title={cat.label} subtitle={cat.desc}>
+              <Panel 
+                key={cat.key} 
+                dotColor={cat.key === "winning_ads" ? "bg-cyan-400" : "bg-accent"} 
+                title={cat.label} 
+                subtitle={cat.desc}
+                extra={getImagesByCategory(state, cat.key).length > 0 ? <CheckBadge /> : null}
+              >
                 <ImageLibrarySection
                   images={getImagesByCategory(state, cat.key)}
                   category={cat.key}
@@ -391,10 +730,53 @@ const Hub = () => {
             ))}
           </div>
         )}
+
+        {activeTab === "intel" && (
+          <div className="animate-fi space-y-5 max-w-5xl">
+            {/* Comp intel */}
+            <Panel 
+              dotColor="bg-secondary" 
+              title="Competitive Intelligence"
+              extra={completion.intel ? <CheckBadge /> : null}
+            >
+              <div className="font-mono text-[9px] text-muted-foreground p-[7px_10px] bg-background rounded-md border-l-2 border-border2 leading-relaxed mb-2.5">
+                Paste winning competitor copy here. Foundation Builder uses this to identify working angles + themes in the market.
+                {state.project.refs.comp_intel.length > 0 && state.project.refs.comp_intel.length < 50 && (
+                  <span className="text-warn block mt-1">
+                    Add at least 50 characters to complete this step.
+                  </span>
+                )}
+              </div>
+              <textarea
+                value={state.project.refs.comp_intel}
+                onChange={(e) =>
+                  setState((s) => ({
+                    ...s,
+                    project: { ...s.project, refs: { ...s.project.refs, comp_intel: e.target.value } },
+                  }))
+                }
+                rows={12}
+                placeholder="Paste competitor hooks, winning headlines, proven copy, market insights, customer reviews from competitors, ad screenshots descriptions..."
+                className="field-input font-mono text-[11px]"
+              />
+              <div className="mt-2 flex justify-between items-center text-[10px] text-muted-foreground">
+                <span>{state.project.refs.comp_intel.length} characters</span>
+                {completion.intel && <span className="text-primary flex items-center gap-1"><CheckCircle2 size={10} /> Complete</span>}
+              </div>
+            </Panel>
+          </div>
+        )}
       </div>
     </AppLayout>
   );
 };
+
+// Check badge component
+const CheckBadge = () => (
+  <span className="flex items-center gap-1 text-[10px] text-primary font-medium">
+    <CheckCircle2 size={12} />
+  </span>
+);
 
 // Image Library Section Component
 interface ImageLibrarySectionProps {
@@ -515,9 +897,12 @@ const Panel = ({ dotColor, title, subtitle, children, extra }: { dotColor: strin
   </div>
 );
 
-const Field = ({ label, children }: { label: string; children: React.ReactNode }) => (
+const Field = ({ label, children, required }: { label: string; children: React.ReactNode; required?: boolean }) => (
   <div className="mb-3 last:mb-0">
-    <label className="block font-mono text-[9px] tracking-widest uppercase text-muted-foreground mb-1.5">{label}</label>
+    <label className="block font-mono text-[9px] tracking-widest uppercase text-muted-foreground mb-1.5">
+      {label}
+      {required && <span className="text-warn ml-1">*</span>}
+    </label>
     {children}
   </div>
 );
