@@ -1,0 +1,140 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 7% 5%;
+    --foreground: 240 10% 95%;
+
+    --card: 240 14% 8%;
+    --card-foreground: 240 10% 95%;
+
+    --popover: 240 14% 8%;
+    --popover-foreground: 240 10% 95%;
+
+    --primary: 78 85% 66%;
+    --primary-foreground: 240 7% 5%;
+
+    --secondary: 196 82% 66%;
+    --secondary-foreground: 240 7% 5%;
+
+    --muted: 240 10% 12%;
+    --muted-foreground: 240 10% 50%;
+
+    --accent: 275 82% 66%;
+    --accent-foreground: 240 7% 5%;
+
+    --destructive: 0 75% 66%;
+    --destructive-foreground: 240 7% 5%;
+
+    --border: 240 10% 15%;
+    --border2: 240 10% 20%;
+    --input: 240 10% 15%;
+    --ring: 78 85% 66%;
+
+    --radius: 0.5rem;
+
+    --warn: 36 85% 66%;
+    --pink: 330 82% 66%;
+
+    --surface: 240 14% 8%;
+    --surface2: 240 14% 11%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Syne', sans-serif;
+  }
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border2));
+    border-radius: 2px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .tag {
+    font-family: 'JetBrains Mono', monospace;
+    @apply text-[8px] px-1.5 py-px rounded-lg border inline-block whitespace-nowrap;
+  }
+  .t-accent {
+    color: hsl(var(--primary));
+    border-color: hsl(var(--primary) / 0.2);
+    background: hsl(var(--primary) / 0.06);
+  }
+  .t-cyan {
+    color: hsl(var(--secondary));
+    border-color: hsl(var(--secondary) / 0.2);
+    background: hsl(var(--secondary) / 0.03);
+  }
+  .t-purple {
+    color: hsl(var(--accent));
+    border-color: hsl(var(--accent) / 0.2);
+    background: hsl(var(--accent) / 0.03);
+  }
+  .t-warn {
+    color: hsl(var(--warn));
+    border-color: hsl(var(--warn) / 0.2);
+    background: hsl(var(--warn) / 0.06);
+  }
+  .t-muted {
+    color: hsl(var(--muted-foreground));
+    border-color: hsl(var(--border2));
+    background: hsl(var(--surface2));
+  }
+  .t-danger {
+    color: hsl(var(--destructive));
+    border-color: hsl(var(--destructive) / 0.2);
+    background: hsl(var(--destructive) / 0.04);
+  }
+  .field-input {
+    @apply w-full bg-surface2 border border-border rounded-[7px] px-3 py-2 font-mono text-[11px] text-foreground outline-none transition-colors;
+  }
+  .field-input:focus {
+    border-color: hsl(var(--primary));
+  }
+  .field-input::placeholder {
+    color: hsl(var(--muted-foreground));
+  }
+}
+
+@layer utilities {
+  @keyframes fi {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: none; }
+  }
+  @keyframes shimmer {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.6; }
+  }
+  @keyframes cardIn {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: none; }
+  }
+  .animate-fi {
+    animation: fi 0.25s ease forwards;
+  }
+  .animate-shimmer {
+    animation: shimmer 1.4s infinite;
+  }
+  .animate-card-in {
+    animation: cardIn 0.25s ease forwards;
+  }
+}

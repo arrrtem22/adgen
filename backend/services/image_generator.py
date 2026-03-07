@@ -1,12 +1,197 @@
 import google.generativeai as genai
 import os
 import base64
-from PIL import Image, ImageDraw, ImageFont
+import json
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import requests
 from io import BytesIO
 import uuid
+from typing import Optional
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+# Configure Gemini
+api_key = os.getenv("GEMINI_API_KEY")
+unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY")
+
+if api_key:
+    genai.configure(api_key=api_key)
+
+
+def get_image_model():
+    """Get the Gemini image generation model."""
+    return genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')
+
+
+def get_vision_model():
+    """Get the Gemini vision model for analysis."""
+    return genai.GenerativeModel('gemini-2.0-flash-exp')
+
+
+def ensure_static_dir():
+    """Ensure static directory exists."""
+    os.makedirs("static", exist_ok=True)
+
+
+def download_image(url: str) -> Optional[Image.Image]:
+    """Download image from URL and return PIL Image."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        return Image.open(BytesIO(response.content))
+    except Exception as e:
+        print(f"Error downloading image: {e}")
+        return None
+
+
+def create_gradient_overlay(image: Image.Image, position: str = "bottom", opacity: float = 0.7) -> Image.Image:
+    """Create a gradient overlay for text readability."""
+    width, height = image.size
+    overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    
+    gradient_height = int(height * 0.4)
+    
+    if position == "bottom":
+        for i in range(gradient_height):
+            alpha = int(opacity * 255 * (i / gradient_height))
+            y = height - gradient_height + i
+            draw.line([(0, y), (width, y)], fill=(0, 0, 0, alpha))
+    elif position == "top":
+        for i in range(gradient_height):
+            alpha = int(opacity * 255 * ((gradient_height - i) / gradient_height))
+            draw.line([(0, i), (width, i)], fill=(0, 0, 0, alpha))
+    
+    return Image.alpha_composite(image.convert('RGBA'), overlay)
+
+
+def add_text_overlay(
+    image: Image.Image,
+    headline: str,
+    subhead: str = "",
+    cta: str = "",
+    style: str = "bottom"
+) -> Image.Image:
+    """Add text overlay to an image."""
+    # Convert to RGBA for compositing
+    if image.mode != 'RGBA':
+        image = image.convert('RGBA')
+    
+    width, height = image.size
+    
+    # Create overlay
+    img_with_overlay = create_gradient_overlay(image, style, 0.6)
+    
+    # Create drawing context
+    draw = ImageDraw.Draw(img_with_overlay)
+    
+    # Try to load fonts, fallback to default
+    try:
+        # Try system fonts
+        font_paths = [
+            "/System/Library/Fonts/Helvetica.ttc",  # macOS
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+            "C:/Windows/Fonts/arial.ttf",  # Windows
+        ]
+        
+        headline_font = None
+        subhead_font = None
+        cta_font = None
+        
+        for font_path in font_paths:
+            if os.path.exists(font_path):
+                headline_font = ImageFont.truetype(font_path, int(height * 0.06))
+                subhead_font = ImageFont.truetype(font_path, int(height * 0.035))
+                cta_font = ImageFont.truetype(font_path, int(height * 0.03))
+                break
+        
+        if not headline_font:
+            raise IOError("No system font found")
+            
+    except:
+        headline_font = ImageFont.load_default()
+        subhead_font = ImageFont.load_default()
+        cta_font = ImageFont.load_default()
+    
+    # Calculate text positions
+    margin = int(width * 0.08)
+    
+    # Draw headline
+    if headline:
+        # Wrap text if too long
+        max_width = width - (margin * 2)
+        words = headline.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=headline_font)
+            if bbox[2] - bbox[0] <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Draw lines
+        if style == "bottom":
+            y_start = height - int(height * 0.35)
+        else:
+            y_start = int(height * 0.15)
+        
+        line_height = int(height * 0.075)
+        for i, line in enumerate(lines[:3]):  # Max 3 lines
+            bbox = draw.textbbox((0, 0), line, font=headline_font)
+            text_width = bbox[2] - bbox[0]
+            x = (width - text_width) // 2
+            y = y_start + (i * line_height)
+            
+            # Draw text shadow
+            draw.text((x+2, y+2), line, font=headline_font, fill=(0, 0, 0, 180))
+            # Draw text
+            draw.text((x, y), line, font=headline_font, fill=(255, 255, 255, 255))
+    
+    # Draw subhead
+    if subhead:
+        y_subhead = y_start + (len(lines) * line_height) + int(height * 0.02)
+        bbox = draw.textbbox((0, 0), subhead, font=subhead_font)
+        text_width = bbox[2] - bbox[0]
+        x = (width - text_width) // 2
+        draw.text((x+1, y_subhead+1), subhead, font=subhead_font, fill=(0, 0, 0, 150))
+        draw.text((x, y_subhead), subhead, font=subhead_font, fill=(255, 255, 255, 230))
+    
+    # Draw CTA button
+    if cta:
+        cta_y = height - int(height * 0.12)
+        bbox = draw.textbbox((0, 0), cta, font=cta_font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        # Button background
+        padding_x = int(width * 0.05)
+        padding_y = int(height * 0.015)
+        button_width = text_width + (padding_x * 2)
+        button_height = text_height + (padding_y * 2)
+        button_x = (width - button_width) // 2
+        button_y = cta_y - padding_y
+        
+        # Draw button
+        draw.rounded_rectangle(
+            [button_x, button_y, button_x + button_width, button_y + button_height],
+            radius=int(height * 0.02),
+            fill=(255, 255, 255, 230)
+        )
+        
+        # Draw CTA text
+        text_x = button_x + padding_x
+        text_y = button_y + padding_y - int(text_height * 0.1)
+        draw.text((text_x, text_y), cta, font=cta_font, fill=(0, 0, 0, 255))
+    
+    return img_with_overlay.convert('RGB')
 
 
 def generate_images(
@@ -16,10 +201,10 @@ def generate_images(
     competitor_image: str = None
 ) -> list[dict]:
     """
-    Generate images for all ad variations based on mode
-    
-    Routes to appropriate generation function based on mode
+    Generate images for all ad variations based on mode.
     """
+    ensure_static_dir()
+    
     if mode == "competitor":
         return generate_competitor_based(ad_variations, product_info, competitor_image)
     elif mode == "stock":
@@ -30,144 +215,241 @@ def generate_images(
         raise ValueError(f"Unknown mode: {mode}")
 
 
-def generate_competitor_based(ad_variations: list[dict], product_info: dict, competitor_image: str) -> list[dict]:
-    """
-    Generate ads matching competitor style
+def analyze_competitor_image(image_b64: str) -> dict:
+    """Analyze competitor image to extract style."""
+    if not api_key:
+        return {
+            "color_scheme": ["#1a1a1a", "#ffffff", "#c8f060"],
+            "text_position": "bottom",
+            "font_style": "bold",
+            "layout": "centered"
+        }
     
-    TODO: Implement competitor-style matching
+    try:
+        model = get_vision_model()
+        
+        # Decode base64 image
+        image_data = base64.b64decode(image_b64)
+        image = Image.open(BytesIO(image_data))
+        
+        prompt = """Analyze this advertisement image. Extract the following as JSON:
+{
+  "color_scheme": [primary color hex, secondary color hex, accent color hex],
+  "text_position": "top" | "bottom" | "center",
+  "font_style": "bold" | "regular" | "light",
+  "layout": "centered" | "left" | "right",
+  "mood": "professional" | "casual" | "luxury" | "playful"
+}
+
+Return ONLY valid JSON."""
+        
+        response = model.generate_content([prompt, image])
+        
+        # Parse JSON from response
+        text = response.text
+        if '```json' in text:
+            text = text.split('```json')[1].split('```')[0]
+        elif '```' in text:
+            text = text.split('```')[1].split('```')[0]
+        
+        return json.loads(text.strip())
+        
+    except Exception as e:
+        print(f"Error analyzing competitor image: {e}")
+        return {
+            "color_scheme": ["#1a1a1a", "#ffffff", "#c8f060"],
+            "text_position": "bottom",
+            "font_style": "bold",
+            "layout": "centered"
+        }
+
+
+def generate_competitor_based(
+    ad_variations: list[dict],
+    product_info: dict,
+    competitor_image: str
+) -> list[dict]:
+    """Generate ads matching competitor style."""
     
-    What to do:
-    1. Decode base64 competitor_image
-    2. Use Gemini Vision to analyze competitor ad:
-       - model = genai.GenerativeModel('gemini-2.0-flash-exp')
-       - Prompt: "Analyze this competitor ad. Extract: color scheme (hex codes), 
-                  text placement (top/bottom/center), font style (bold/regular),
-                  layout structure. Return as JSON."
-       - Pass competitor image to model
-    3. Parse style analysis JSON
-    4. For each ad_variation:
-       - Download product image (if available)
-       - Use PIL to create 1080x1080 canvas
-       - Apply extracted color scheme
-       - Place text in similar position as competitor
-       - Add product image if available
-       - Save to static/ folder
-       - Add image_url to variation dict
-    5. Return updated ad_variations list
+    # Analyze competitor image if provided
+    style = {"text_position": "bottom"}
+    if competitor_image:
+        style = analyze_competitor_image(competitor_image)
     
-    Tips:
-    - Use PIL ImageDraw for text rendering
-    - Create gradient overlays with PIL for text readability
-    - Save images as: static/ad_{id}.png
-    - Return full URL: http://localhost:8000/static/ad_{id}.png
-    """
-    # STUB: Return variations with placeholder images
     for ad in ad_variations:
-        ad["image_url"] = "https://via.placeholder.com/1080x1080/3B82F6/ffffff?text=Competitor+Style"
+        try:
+            # Create base image
+            width, height = 1080, 1080
+            
+            # Use colors from style analysis or defaults
+            colors = style.get("color_scheme", ["#1a1a1a", "#2a2a2a", "#c8f060"])
+            
+            # Create gradient background
+            image = Image.new('RGB', (width, height), colors[0])
+            draw = ImageDraw.Draw(image)
+            
+            # Add some visual interest with gradient-like effect
+            for y in range(height):
+                ratio = y / height
+                r = int(int(colors[0][1:3], 16) * (1 - ratio) + int(colors[1][1:3], 16) * ratio)
+                g = int(int(colors[0][3:5], 16) * (1 - ratio) + int(colors[1][3:5], 16) * ratio)
+                b = int(int(colors[0][5:7], 16) * (1 - ratio) + int(colors[1][5:7], 16) * ratio)
+                draw.line([(0, y), (width, y)], fill=(r, g, b))
+            
+            # Add text overlay
+            image = add_text_overlay(
+                image,
+                ad.get("headline", ""),
+                ad.get("subhead", ""),
+                ad.get("cta", "Learn More →"),
+                style.get("text_position", "bottom")
+            )
+            
+            # Save image
+            filename = f"static/ad_{ad['id']}.png"
+            image.save(filename, "PNG")
+            
+            ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            
+        except Exception as e:
+            print(f"Error generating competitor image for {ad['id']}: {e}")
+            ad["image_url"] = f"https://via.placeholder.com/1080x1080/3B82F6/ffffff?text=Competitor+Style"
+    
     return ad_variations
 
 
+def search_unsplash(query: str) -> Optional[str]:
+    """Search Unsplash for stock image."""
+    if not unsplash_key:
+        return None
+    
+    try:
+        url = "https://api.unsplash.com/search/photos"
+        headers = {"Authorization": f"Client-ID {unsplash_key}"}
+        params = {
+            "query": query,
+            "per_page": 1,
+            "orientation": "squarish"
+        }
+        
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        data = response.json()
+        
+        if data.get("results"):
+            return data["results"][0]["urls"]["regular"]
+        return None
+        
+    except Exception as e:
+        print(f"Error searching Unsplash: {e}")
+        return None
+
+
 def generate_stock_based(ad_variations: list[dict], product_info: dict) -> list[dict]:
-    """
-    Generate ads using stock images + text overlay
+    """Generate ads using stock images + text overlay."""
     
-    TODO: Implement stock image + overlay generation
+    product_title = product_info.get("title", "product")
+    keywords = product_title.split()[:3]
     
-    What to do:
-    1. For each ad_variation:
-       - Search Unsplash API for relevant stock image
-         - Use product category/keywords from product_info
-         - API: https://api.unsplash.com/search/photos
-         - Headers: {'Authorization': f'Client-ID {UNSPLASH_ACCESS_KEY}'}
-       - Download the first relevant image
-       - Resize to 1080x1080 (crop center if needed)
-       - Create text overlay:
-         - Add semi-transparent gradient (top or bottom)
-         - Add headline text (large, bold)
-         - Add copy text (smaller, regular)
-         - Use white text with good contrast
-       - Save to static/ folder
-       - Add image_url to variation
-    2. Return updated ad_variations
+    for i, ad in enumerate(ad_variations):
+        try:
+            # Search for relevant stock image
+            search_query = f"{product_title} {' '.join(keywords)} lifestyle professional"
+            image_url = search_unsplash(search_query)
+            
+            if image_url:
+                # Download image
+                response = requests.get(image_url, timeout=10)
+                image = Image.open(BytesIO(response.content))
+            else:
+                # Create placeholder gradient
+                image = Image.new('RGB', (1080, 1080), (139, 92, 246))
+                draw = ImageDraw.Draw(image)
+                for y in range(1080):
+                    ratio = y / 1080
+                    r = int(139 * (1 - ratio) + 100 * ratio)
+                    g = int(92 * (1 - ratio) + 50 * ratio)
+                    b = int(246 * (1 - ratio) + 200 * ratio)
+                    draw.line([(0, y), (1080, y)], fill=(r, g, b))
+            
+            # Resize to square
+            image = image.resize((1080, 1080), Image.Resampling.LANCZOS)
+            
+            # Add text overlay
+            image = add_text_overlay(
+                image,
+                ad.get("headline", ""),
+                ad.get("subhead", ""),
+                ad.get("cta", "Shop Now →"),
+                "bottom"
+            )
+            
+            # Save image
+            filename = f"static/ad_{ad['id']}.png"
+            image.save(filename, "PNG")
+            
+            ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            
+        except Exception as e:
+            print(f"Error generating stock image for {ad['id']}: {e}")
+            ad["image_url"] = f"https://via.placeholder.com/1080x1080/8B5CF6/ffffff?text=Stock+Image"
     
-    Tips:
-    - PIL Image.open() to load image from URL
-    - Use PIL ImageDraw to add rectangles and text
-    - Create gradient: draw multiple rectangles with alpha
-    - Default fonts: ImageFont.load_default() or download Inter/Roboto
-    - Add padding around text for readability
-    """
-    # STUB: Return variations with placeholder images
-    for ad in ad_variations:
-        ad["image_url"] = "https://via.placeholder.com/1080x1080/8B5CF6/ffffff?text=Stock+Image"
     return ad_variations
 
 
 def generate_ai_based(ad_variations: list[dict], product_info: dict) -> list[dict]:
-    """
-    Generate ads using Gemini image generation + text overlay
+    """Generate ads using AI image generation + text overlay."""
     
-    TODO: Implement AI image generation
+    if not api_key:
+        # Fallback to stock mode if no API key
+        return generate_stock_based(ad_variations, product_info)
     
-    What to do:
-    1. For each ad_variation:
-       - Build image generation prompt:
-         - "Professional product photography for {product_title}"
-         - "Style: {angle} advertising"
-         - "Clean background, high quality, commercial photography"
-         - "1:1 square format, product-focused"
-       - Use Gemini image generation:
-         - model = genai.GenerativeModel('gemini-3.1-flash-image-preview')
-         - response = model.generate_content(prompt)
-         - Extract image data: response.parts[0].inline_data.data
-       - Save generated image
-       - Add text overlay (same as stock mode):
-         - Headline + copy on gradient background
-       - Save final image to static/
-       - Add image_url to variation
-    2. Return updated ad_variations
+    product_title = product_info.get("title", "product")
+    visual_desc = product_info.get("visualDesc", "")
     
-    Tips:
-    - Keep prompts simple and focused on product
-    - Generated images work better with minimal text in prompt
-    - Add text overlay separately (AI struggles with text)
-    - Handle API failures gracefully (fallback to placeholder)
-    """
-    # STUB: Return variations with placeholder images
     for ad in ad_variations:
-        ad["image_url"] = "https://via.placeholder.com/1080x1080/10B981/ffffff?text=AI+Generated"
+        try:
+            model = get_image_model()
+            
+            # Build generation prompt
+            angle = ad.get("angle", "product")
+            prompt = f"""Professional product photography for {product_title}.
+Style: {angle} advertising aesthetic.
+{visual_desc}
+
+Clean background, high quality commercial photography, 1:1 square format, product-focused, professional lighting, minimalist composition."""
+            
+            # Generate image
+            response = model.generate_content(prompt)
+            
+            # Extract image data
+            if response.parts and hasattr(response.parts[0], 'inline_data'):
+                image_data = response.parts[0].inline_data.data
+                image = Image.open(BytesIO(image_data))
+            else:
+                # Fallback: create gradient
+                image = Image.new('RGB', (1080, 1080), (16, 185, 129))
+            
+            # Ensure correct size
+            image = image.resize((1080, 1080), Image.Resampling.LANCZOS)
+            
+            # Add text overlay
+            image = add_text_overlay(
+                image,
+                ad.get("headline", ""),
+                ad.get("subhead", ""),
+                ad.get("cta", "Get Started →"),
+                "bottom"
+            )
+            
+            # Save image
+            filename = f"static/ad_{ad['id']}.png"
+            image.save(filename, "PNG")
+            
+            ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            
+        except Exception as e:
+            print(f"Error generating AI image for {ad['id']}: {e}")
+            # Fallback to placeholder
+            ad["image_url"] = f"https://via.placeholder.com/1080x1080/10B981/ffffff?text=AI+Generated"
+    
     return ad_variations
-
-
-def add_text_overlay(image: Image.Image, headline: str, copy: str, style: str = "bottom") -> Image.Image:
-    """
-    Add text overlay to an image
-    
-    TODO: Implement text overlay function
-    
-    What to do:
-    1. Create ImageDraw object
-    2. Based on style ("top", "bottom", "center"):
-       - Draw gradient overlay (30-40% of image height)
-       - Use semi-transparent black/dark color
-    3. Add headline text:
-       - Large font size (60-80px if available)
-       - Bold weight
-       - Centered horizontally
-       - Positioned in overlay area
-    4. Add copy text:
-       - Smaller font (30-40px)
-       - Regular weight
-       - Centered horizontally
-       - Below headline with padding
-    5. Return modified image
-    
-    Tips:
-    - Use ImageFont.truetype() if you have font files
-    - Otherwise use ImageFont.load_default()
-    - Calculate text bounding box for centering: draw.textbbox()
-    - Add padding (40-60px) from edges
-    - White text works best with dark overlays
-    """
-    # STUB: Return image unchanged
-    return image
