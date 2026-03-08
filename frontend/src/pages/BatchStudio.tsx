@@ -99,9 +99,11 @@ const BatchStudio = () => {
     setGenerating(true);
     setError(null);
 
-    const claudeKey = import.meta.env.VITE_CLAUDE_KEY || "";
-    if (!claudeKey) {
-      setError("Add VITE_CLAUDE_KEY in .env to generate variants");
+    // API keys are now handled by the backend
+    // The backend will use ANTHROPIC_API_KEY (Claude) or GEMINI_API_KEY (Gemini)
+    // Just check if backend is available
+    if (!backendReady) {
+      setError("Backend API not available. Please check your API keys are set on the server.");
       setGenerating(false);
       return;
     }
@@ -289,7 +291,8 @@ Return a JSON array where each element has exactly these fields:
   const perfTag = (angle: string) => state.project.angles.find((a) => a.name === angle)?.perf_tag || "untested";
   const perfTagClass: Record<string, string> = { winner: "t-accent", proven: "t-accent", comp: "t-cyan", untested: "t-muted" };
 
-  const hasClaudeKey = !!import.meta.env.VITE_CLAUDE_KEY;
+  // API keys are set on backend, frontend just checks backend health
+  const hasApiKey = backendReady !== false;
 
   return (
     <AppLayout
@@ -404,20 +407,20 @@ Return a JSON array where each element has exactly these fields:
             </div>
 
             {/* API status */}
-            {!hasClaudeKey && (
+            {!backendReady && (
               <div className="p-2.5 rounded-[7px] border border-destructive/15 bg-destructive/[0.03]">
-                <div className="font-mono text-[9px] text-destructive">No Claude key — set VITE_CLAUDE_KEY in .env</div>
+                <div className="font-mono text-[9px] text-destructive">Backend offline — set ANTHROPIC_API_KEY or GEMINI_API_KEY on server</div>
               </div>
             )}
 
             {/* Generate */}
             <button
               onClick={startGeneration}
-              disabled={generating || !hasClaudeKey}
+              disabled={generating || !backendReady}
               className={`w-full py-3 font-sans text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                 generating
                   ? "bg-surface2 text-warn border border-warn/25 cursor-default"
-                  : !hasClaudeKey
+                  : !backendReady
                   ? "bg-muted text-muted-foreground cursor-not-allowed"
                   : "bg-primary text-primary-foreground hover:opacity-90"
               }`}

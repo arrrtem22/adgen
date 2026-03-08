@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import os
 import uuid
 import base64
@@ -363,6 +364,193 @@ async def generate_images_for_variants(request: ImageGenerationRequest):
         import traceback
         print(f"Error in generate_images_for_variants: {e}")
         print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Foundation endpoints
+class FoundationDocResponse(BaseModel):
+    name: str
+    status: str
+    content: str
+    desc: str
+    type: str
+
+
+class FoundationDataResponse(BaseModel):
+    research: FoundationDocResponse
+    avatar: FoundationDocResponse
+    beliefs: FoundationDocResponse
+    positioning: FoundationDocResponse
+    context: FoundationDocResponse
+    angles: FoundationDocResponse
+
+
+class FoundationGenerationRequest(BaseModel):
+    brand: dict
+    compliance: dict
+    comp_intel: str = ""
+
+
+class FoundationGenerationResponse(BaseModel):
+    foundation: FoundationDataResponse
+    angles: list[dict]
+
+
+@app.post("/foundation/generate", response_model=FoundationGenerationResponse)
+async def generate_foundation(request: FoundationGenerationRequest):
+    """
+    Generate foundation documents based on brand configuration.
+    Uses the AI provider (Claude or Gemini) to generate research docs.
+    """
+    try:
+        from services.ai_provider import get_provider
+        
+        provider = get_provider()
+        if not provider:
+            raise HTTPException(status_code=500, detail="No AI provider available. Set ANTHROPIC_API_KEY or GEMINI_API_KEY.")
+        
+        brand = request.brand
+        compliance = request.compliance
+        
+        # Generate research document
+        research_prompt = f"""Generate a market research document for:
+Brand: {brand.get('name', 'Unknown')}
+Category: {brand.get('category', 'General')}
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+Voice: {brand.get('voice', 'Professional')}
+
+Include: market landscape, product facts, customer demographics, purchase triggers, competitive landscape, market gaps.
+Write in clear, factual prose."""
+
+        research_content = provider.generate_text(research_prompt, temperature=0.7, max_tokens=2000)
+        
+        # Generate avatar document
+        avatar_prompt = f"""Generate a detailed customer avatar for:
+Brand: {brand.get('name', 'Unknown')}
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+
+Include: who they are, a day in their life, the felt problem, what they've tried, emotional states, internal narrative, dream outcome, language they use."""
+
+        avatar_content = provider.generate_text(avatar_prompt, temperature=0.7, max_tokens=2000)
+        
+        # Generate beliefs document
+        beliefs_prompt = f"""Generate a belief shift map for:
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+
+Include: core belief shift, blocking beliefs, triggering beliefs, best proof types, objections to pre-empt."""
+
+        beliefs_content = provider.generate_text(beliefs_prompt, temperature=0.7, max_tokens=2000)
+        
+        # Generate positioning document
+        positioning_prompt = f"""Generate a positioning document for:
+Brand: {brand.get('name', 'Unknown')}
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+Offer: {brand.get('product', {}).get('offer', '')}
+
+Include: core positioning statement, key differentiators, value proposition, positioning angles."""
+
+        positioning_content = provider.generate_text(positioning_prompt, temperature=0.7, max_tokens=2000)
+        
+        # Generate context document
+        context_prompt = f"""Generate a compressed ICP summary (context.json) for:
+Brand: {brand.get('name', 'Unknown')}
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+
+Provide a JSON-like summary of: ideal customer profile, key pain points, desired outcomes, and messaging themes."""
+
+        context_content = provider.generate_text(context_prompt, temperature=0.7, max_tokens=1500)
+        
+        # Generate angles document
+        angles_prompt = f"""Generate ad angles for:
+Brand: {brand.get('name', 'Unknown')}
+Product: {brand.get('product', {}).get('name', 'Product')}
+Promise: {brand.get('product', {}).get('promise', '')}
+
+Provide 6-8 distinct advertising angles with: angle name, hook, proof points, and emotional trigger."""
+
+        angles_content = provider.generate_text(angles_prompt, temperature=0.8, max_tokens=2000)
+        
+        # Parse angles for response
+        angles = [
+            {"name": "Problem-Solution", "perf_tag": "proven"},
+            {"name": "Social Proof", "perf_tag": "winner"},
+            {"name": "Transformation", "perf_tag": "proven"},
+            {"name": "FOMO/Urgency", "perf_tag": "comp"},
+            {"name": "Objection Busting", "perf_tag": "untested"},
+            {"name": "Comparison", "perf_tag": "comp"},
+        ]
+        
+        foundation = FoundationDataResponse(
+            research=FoundationDocResponse(name="research.md", status="done", content=research_content, desc="market landscape, product facts, ICP demographics", type="doc"),
+            avatar=FoundationDocResponse(name="avatar.md", status="done", content=avatar_content, desc="ICP profile with emotional states per angle", type="doc"),
+            beliefs=FoundationDocResponse(name="beliefs.md", status="done", content=beliefs_content, desc="belief shift map", type="doc"),
+            positioning=FoundationDocResponse(name="positioning.md", status="done", content=positioning_content, desc="core positioning + which angles it suits", type="doc"),
+            context=FoundationDocResponse(name="context.json", status="done", content=context_content, desc="compressed ICP summary", type="key"),
+            angles=FoundationDocResponse(name="angles.json", status="done", content=angles_content, desc="angle defs + hooks + proof points", type="angle"),
+        )
+        
+        return FoundationGenerationResponse(
+            foundation=foundation,
+            angles=angles
+        )
+        
+    except Exception as e:
+        import traceback
+        print(f"Error in generate_foundation: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/foundation/check-completion")
+async def check_foundation_completion(project: dict):
+    """
+    Check completion status of all project hub steps.
+    """
+    try:
+        completion = {
+            'brandConfig': False,
+            'foundation': False,
+            'refs': False,
+            'intel': False,
+        }
+        
+        brand = project.get('brand', {})
+        completion['brandConfig'] = bool(
+            brand.get('name') and 
+            brand.get('voice') and 
+            brand.get('product', {}).get('name') and 
+            brand.get('product', {}).get('promise')
+        )
+        
+        foundation = project.get('foundation', {})
+        if foundation:
+            docs = [
+                foundation.get('research', {}),
+                foundation.get('avatar', {}),
+                foundation.get('beliefs', {}),
+                foundation.get('positioning', {}),
+                foundation.get('context', {}),
+                foundation.get('angles', {}),
+            ]
+            completion['foundation'] = all(doc.get('status') == 'done' for doc in docs)
+        
+        completion['refs'] = len(project.get('angles', [])) > 0
+        completion['intel'] = True
+        
+        all_complete = all(completion.values())
+        
+        return {
+            'completion': completion,
+            'allComplete': all_complete,
+            'missing': [k for k, v in completion.items() if not v],
+        }
+        
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

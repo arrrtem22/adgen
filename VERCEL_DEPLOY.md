@@ -43,8 +43,11 @@ Add these environment variables in the Vercel dashboard:
 
 | Name | Value | Required |
 |------|-------|----------|
-| `GEMINI_API_KEY` | Your Google Gemini API key | Yes |
+| `ANTHROPIC_API_KEY` | Your Anthropic Claude API key | Recommended |
+| `GEMINI_API_KEY` | Your Google Gemini API key | Alternative |
 | `UNSPLASH_ACCESS_KEY` | Your Unsplash API key (optional) | No |
+
+**Note**: Set either `ANTHROPIC_API_KEY` (for Claude) or `GEMINI_API_KEY` (for Gemini). If both are set, Claude will be used for text generation. Image generation always uses `gemini-3.1-flash-image-preview`.
 
 ### 4. Deploy
 

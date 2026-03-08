@@ -1,0 +1,19 @@
+# Ignore files for Vercel deployment
+node_modules
+frontend/node_modules
+backend/__pycache__
+backend/**/__pycache__
+*.pyc
+.pytest_cache
+.git
+.github
+.vscode
+.idea
+*.log
+.env
+.env.local
+.env.*.local
+README.md
+VERCEL_DEPLOY.md
+GITHUB_SECRETS.md
+.github

@@ -1,18 +1,9 @@
-import google.generativeai as genai
 import json
 import os
 import uuid
 from typing import Optional
 
-# Configure Gemini
-api_key = os.getenv("GEMINI_API_KEY")
-if api_key:
-    genai.configure(api_key=api_key)
-
-
-def get_model():
-    """Get the Gemini model instance."""
-    return genai.GenerativeModel('gemini-2.0-flash-exp')
+from services.ai_provider import get_provider, get_provider_type
 
 
 def build_prompt(
@@ -60,7 +51,7 @@ For each variation:
 - hook: Opening hook statement (include quotes, emotional trigger)
 - subhead: Supporting subheadline (10-15 words)
 - bullets: 3 key benefit bullets (short phrases)
-- cta: Call-to-action text (action-oriented, include arrow)
+- cta: Call-to-action text (action-oriented, use -> for arrow instead of emoji)
 
 Return ONLY valid JSON in this exact format:
 [
@@ -72,17 +63,18 @@ Return ONLY valid JSON in this exact format:
     "hook": "\\"Quoted hook statement.\\"",
     "subhead": "Supporting subheadline text",
     "bullets": ["Benefit 1", "Benefit 2", "Benefit 3"],
-    "cta": "Get Yours Now →"
+    "cta": "Get Yours Now ->"
   }}
 ]
 
-Make each variation distinct and compelling. Ensure copy is under 125 characters."""
+Make each variation distinct and compelling. Ensure copy is under 125 characters.
+Do not use emojis or special unicode characters - use simple ASCII only."""
     
     return prompt
 
 
 def parse_response(text: str) -> list[dict]:
-    """Parse the Gemini response into structured data."""
+    """Parse the AI response into structured data."""
     try:
         # Try to find JSON in the response
         text = text.strip()
@@ -114,31 +106,30 @@ def generate_ad_copy_variations(
     count: int = 3
 ) -> list[dict]:
     """
-    Generate ad copy variations using Gemini 2.0 Flash.
+    Generate ad copy variations using configured AI provider (Claude or Gemini).
     """
+    provider = get_provider()
+    
     # Check if API key is configured
-    if not api_key:
-        print("Warning: GEMINI_API_KEY not set, using mock data")
+    if not provider:
+        print("Warning: No AI provider available, using mock data")
+        print("Set ANTHROPIC_API_KEY for Claude or GEMINI_API_KEY for Gemini")
         return get_mock_variations(count)
     
     try:
-        model = get_model()
         prompt = build_prompt(product_info, iteration, previous_winners, count)
         
-        response = model.generate_content(
+        response_text = provider.generate_text(
             prompt,
-            generation_config={
-                'temperature': 0.8,
-                'top_p': 0.9,
-                'top_k': 40,
-            }
+            temperature=0.8,
+            max_tokens=2000
         )
         
-        if not response.text:
-            print("Warning: Empty response from Gemini, using mock data")
+        if not response_text:
+            print("Warning: Empty response from AI, using mock data")
             return get_mock_variations(count)
         
-        variations = parse_response(response.text)
+        variations = parse_response(response_text)
         
         if not variations:
             print("Warning: Could not parse variations, using mock data")
@@ -156,7 +147,7 @@ def generate_ad_copy_variations(
                 "hook": var.get("hook", f'"{var.get("headline", "Amazing!")}"'),
                 "subhead": var.get("subhead", ""),
                 "bullets": var.get("bullets", ["Quality guaranteed", "Fast shipping", "Easy returns"]),
-                "cta": var.get("cta", "Shop Now →"),
+                "cta": var.get("cta", "Shop Now ->"),
                 "mode": ["A", "B", "C"][i % 3],
                 "format": "standard",
                 "imgNote": f"Image for {var.get('angle', 'product')} angle",
@@ -185,7 +176,7 @@ def get_mock_variations(count: int = 3) -> list[dict]:
             "hook": '"I wish I found this sooner - game changer!"',
             "subhead": "Designed for people who value their time",
             "bullets": ["Works in minutes", "No setup required", "Proven results"],
-            "cta": "Get Started →",
+            "cta": "Get Started ->",
             "mode": "A",
             "format": "standard",
             "imgNote": "Professional lifestyle image",
@@ -201,8 +192,8 @@ def get_mock_variations(count: int = 3) -> list[dict]:
             "copy": "Trusted by professionals worldwide. See why everyone's switching.",
             "hook": '"47,000 people made the switch last month"',
             "subhead": "Join the community of satisfied customers",
-            "bullets": ["4.9★ rating", "47,000+ happy users", "Featured in top publications"],
-            "cta": "Join Them →",
+            "bullets": ["4.9* rating", "47,000+ happy users", "Featured in top publications"],
+            "cta": "Join Them ->",
             "mode": "B",
             "format": "testimonial",
             "imgNote": "Crowd or community image",
@@ -219,7 +210,7 @@ def get_mock_variations(count: int = 3) -> list[dict]:
             "hook": '"Last chance - offer expires at midnight!"',
             "subhead": "Only 50 spots left at this price",
             "bullets": ["40% off today only", "Free shipping included", "30-day guarantee"],
-            "cta": "Claim Offer →",
+            "cta": "Claim Offer ->",
             "mode": "C",
             "format": "promotional",
             "imgNote": "Bold promotional graphic",
@@ -236,7 +227,7 @@ def get_mock_variations(count: int = 3) -> list[dict]:
             "hook": '"I noticed the difference within a week"',
             "subhead": "Results you can see and feel",
             "bullets": ["Visible in 7 days", "Clinically tested", "100% natural"],
-            "cta": "Start Today →",
+            "cta": "Start Today ->",
             "mode": "A",
             "format": "before-after",
             "imgNote": "Transformation visual",
