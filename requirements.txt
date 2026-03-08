@@ -8,4 +8,4 @@ python-dotenv>=1.0.0
 pydantic>=2.5.3
 lxml>=5.1.0
 httpx>=0.26.0
-# Pillow - install separately with: pip install --only-binary :all: pillow
+pillow>=10.2.0
