@@ -1,4 +1,3 @@
-import google.generativeai as genai
 import os
 import base64
 import json
@@ -8,22 +7,39 @@ from io import BytesIO
 import uuid
 from typing import Optional
 
-# Configure Gemini
+# Configure Gemini - use new SDK
+try:
+    from google import genai
+    from google.genai import types
+    USE_NEW_SDK = True
+except ImportError:
+    import google.generativeai as genai
+    USE_NEW_SDK = False
+
 api_key = os.getenv("GEMINI_API_KEY")
 unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY")
 
+# Initialize client
+client = None
 if api_key:
-    genai.configure(api_key=api_key)
+    if USE_NEW_SDK:
+        client = genai.Client(api_key=api_key)
+    else:
+        genai.configure(api_key=api_key)
 
 
 def get_image_model():
     """Get the Gemini image generation model."""
-    return genai.GenerativeModel('gemini-2.0-flash-exp-image-generation')
+    if USE_NEW_SDK and client:
+        return client
+    return genai.GenerativeModel('gemini-3.1-flash-image-preview')
 
 
 def get_vision_model():
     """Get the Gemini vision model for analysis."""
-    return genai.GenerativeModel('gemini-2.0-flash-exp')
+    if USE_NEW_SDK and client:
+        return client
+    return genai.GenerativeModel('gemini-3.1-flash-image-preview')
 
 
 def ensure_static_dir():
@@ -400,7 +416,7 @@ def generate_ai_based(ad_variations: list[dict], product_info: dict) -> list[dic
     """Generate ads using AI image generation + text overlay."""
     
     if not api_key:
-        # Fallback to stock mode if no API key
+        print("No API key, falling back to stock mode")
         return generate_stock_based(ad_variations, product_info)
     
     product_title = product_info.get("title", "product")
@@ -408,26 +424,82 @@ def generate_ai_based(ad_variations: list[dict], product_info: dict) -> list[dic
     
     for ad in ad_variations:
         try:
-            model = get_image_model()
-            
             # Build generation prompt
             angle = ad.get("angle", "product")
-            prompt = f"""Professional product photography for {product_title}.
-Style: {angle} advertising aesthetic.
-{visual_desc}
+            headline = ad.get("headline", "")
+            hook = ad.get("hook", "")
+            
+            prompt = f"""Professional product photography for: {product_title}
 
-Clean background, high quality commercial photography, 1:1 square format, product-focused, professional lighting, minimalist composition."""
+Visual direction: {visual_desc}
+Style: {angle} advertising aesthetic
+Headline theme: {headline}
+Hook concept: {hook}
+
+Create a compelling, high-quality product image for a Facebook/Instagram ad:
+- Clean professional background
+- Commercial photography style
+- Product-focused composition
+- Professional lighting
+- Eye-catching and scroll-stopping
+- Square format optimized for social media
+- No text overlay needed (will be added later)
+
+High quality, crisp details, 1:1 aspect ratio."""
             
-            # Generate image
-            response = model.generate_content(prompt)
+            print(f"Generating image for ad {ad['id']}...")
             
-            # Extract image data
-            if response.parts and hasattr(response.parts[0], 'inline_data'):
-                image_data = response.parts[0].inline_data.data
-                image = Image.open(BytesIO(image_data))
+            image = None
+            
+            if USE_NEW_SDK and client:
+                # Use new SDK
+                response = client.models.generate_content(
+                    model='gemini-3.1-flash-image-preview',
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_modalities=['Text', 'Image']
+                    )
+                )
+                
+                # Extract image from response
+                if response.candidates:
+                    for candidate in response.candidates:
+                        if candidate.content and candidate.content.parts:
+                            for part in candidate.content.parts:
+                                if part.inline_data:
+                                    image = Image.open(BytesIO(part.inline_data.data))
+                                    print(f"Found image in new SDK response for ad {ad['id']}")
+                                    break
+                                elif hasattr(part, 'image') and part.image:
+                                    image = Image.open(BytesIO(part.image.data))
+                                    print(f"Found image.data in new SDK response for ad {ad['id']}")
+                                    break
             else:
-                # Fallback: create gradient
-                image = Image.new('RGB', (1080, 1080), (16, 185, 129))
+                # Use old SDK
+                model = genai.GenerativeModel('gemini-3.1-flash-image-preview')
+                response = model.generate_content(prompt)
+                
+                # Extract image data from old SDK response
+                if hasattr(response, 'parts') and response.parts:
+                    for part in response.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            image_data = part.inline_data.data
+                            image = Image.open(BytesIO(image_data))
+                            print(f"Found inline_data in old SDK response for ad {ad['id']}")
+                            break
+            
+            # If no image generated, create a nice gradient fallback
+            if image is None:
+                print(f"No image generated for ad {ad['id']}, creating fallback")
+                image = Image.new('RGB', (1080, 1080), (30, 30, 40))
+                draw = ImageDraw.Draw(image)
+                # Create gradient
+                for y in range(1080):
+                    ratio = y / 1080
+                    r = int(30 + 40 * ratio)
+                    g = int(30 + 50 * ratio)
+                    b = int(40 + 60 * ratio)
+                    draw.line([(0, y), (1080, y)], fill=(r, g, b))
             
             # Ensure correct size
             image = image.resize((1080, 1080), Image.Resampling.LANCZOS)
@@ -435,9 +507,9 @@ Clean background, high quality commercial photography, 1:1 square format, produc
             # Add text overlay
             image = add_text_overlay(
                 image,
-                ad.get("headline", ""),
+                headline,
                 ad.get("subhead", ""),
-                ad.get("cta", "Get Started →"),
+                ad.get("cta", "Learn More →"),
                 "bottom"
             )
             
@@ -446,10 +518,27 @@ Clean background, high quality commercial photography, 1:1 square format, produc
             image.save(filename, "PNG")
             
             ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            print(f"✓ Saved image for ad {ad['id']} to {filename}")
             
         except Exception as e:
-            print(f"Error generating AI image for {ad['id']}: {e}")
-            # Fallback to placeholder
-            ad["image_url"] = f"https://via.placeholder.com/1080x1080/10B981/ffffff?text=AI+Generated"
+            import traceback
+            print(f"✗ Error generating AI image for {ad['id']}: {e}")
+            print(traceback.format_exc())
+            # Fallback to gradient placeholder
+            try:
+                image = Image.new('RGB', (1080, 1080), (16, 185, 129))
+                draw = ImageDraw.Draw(image)
+                for y in range(1080):
+                    ratio = y / 1080
+                    r = int(16 * (1 - ratio) + 59 * ratio)
+                    g = int(185 * (1 - ratio) + 130 * ratio)
+                    b = int(129 * (1 - ratio) + 246 * ratio)
+                    draw.line([(0, y), (1080, y)], fill=(r, g, b))
+                image = add_text_overlay(image, ad.get("headline", ""), ad.get("subhead", ""), ad.get("cta", "Learn More →"), "bottom")
+                filename = f"static/ad_{ad['id']}.png"
+                image.save(filename, "PNG")
+                ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            except:
+                ad["image_url"] = f"https://via.placeholder.com/1080x1080/10B981/ffffff?text=AI+Generated"
     
     return ad_variations

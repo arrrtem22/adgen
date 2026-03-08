@@ -88,8 +88,8 @@ const Output = () => {
         {filtered.map((v, i) => {
           const bg = BG_STYLES[v.bg] || BG_STYLES["bg-dark"];
           const status = v.status || "pending";
-          const hasRealImage = v.imageB64 && !v.imageB64.startsWith("data:image") && !v.imageB64.startsWith("/placeholder");
-          const imageUrl = hasRealImage ? api.getImageUrl(v.imageB64) : null;
+          const hasImage = v.imageB64 && !v.imageB64.startsWith("/placeholder");
+          const imageUrl = hasImage ? api.getImageUrl(v.imageB64) : null;
           
           return (
             <div
@@ -100,8 +100,8 @@ const Output = () => {
               }`}
               style={{ animationDelay: `${i * 40}ms` }}
             >
-              <div className="h-[140px] relative overflow-hidden">
-                {hasRealImage ? (
+              <div className="h-[140px] relative overflow-hidden" style={hasImage ? undefined : { background: bg }}>
+                {hasImage ? (
                   <img
                     src={imageUrl!}
                     alt={v.headline}
@@ -109,12 +109,15 @@ const Output = () => {
                     onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                   />
                 ) : (
-                  <>
-                    <div className="absolute inset-0" style={{ background: bg }} />
-                    <div className="absolute inset-0 flex items-center justify-center text-[28px] opacity-15">🐕</div>
-                  </>
+                  <div className="h-full flex flex-col text-[9px] leading-tight overflow-hidden p-2.5">
+                    <div className="font-bold text-foreground mb-1 line-clamp-2">{v.hook}</div>
+                    <div className="text-muted-foreground/80 mb-1 line-clamp-1">{v.headline}</div>
+                    {v.subhead && (
+                      <div className="text-[8px] text-muted-foreground/60 line-clamp-2">{v.subhead}</div>
+                    )}
+                  </div>
                 )}
-                <div className={`absolute top-1.5 right-1.5 tag ${modeClass(v.mode)}`}>Mode {v.mode}</div>
+                <div className={`absolute top-1.5 right-1.5 tag ${modeClass(v.mode)}`}>{v.mode}</div>
                 {status !== "pending" && (
                   <div className={`absolute top-1.5 left-1.5 font-mono text-[7px] px-1.5 py-0.5 rounded border ${
                     status === "approved"
@@ -158,23 +161,40 @@ const Output = () => {
           )}
 
           <div className="flex gap-7 items-start max-w-[860px] w-full animate-fi">
-            {/* Image */}
-            <div className="w-[380px] min-w-[380px] rounded-[10px] overflow-hidden border border-border2">
-              {lbVariant.imageB64 && !lbVariant.imageB64.startsWith("/placeholder") ? (
-                <img
-                  src={api.getImageUrl(lbVariant.imageB64)}
-                  alt={lbVariant.headline}
-                  className="w-full aspect-square object-cover"
-                  onError={(e) => { 
-                    (e.target as HTMLImageElement).style.display = 'none';
-                  }}
-                />
-              ) : (
-                <div className="aspect-square flex items-center justify-center text-5xl opacity-10" style={{ background: BG_STYLES[lbVariant.bg] || BG_STYLES["bg-dark"] }}>
-                  🐕
+            {/* Generated Image or Schema Preview */}
+            {(() => {
+              const hasLbImage = lbVariant.imageB64 && !lbVariant.imageB64.startsWith("/placeholder");
+              const lbImageUrl = hasLbImage ? api.getImageUrl(lbVariant.imageB64) : null;
+              return (
+                <div className="w-[380px] min-w-[380px] rounded-[10px] overflow-hidden border border-border2">
+                  {hasLbImage ? (
+                    <img
+                      src={lbImageUrl!}
+                      alt={lbVariant.headline}
+                      className="w-full aspect-square object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                  ) : (
+                    <div className="aspect-square flex flex-col justify-center p-4" style={{ background: BG_STYLES[lbVariant.bg] || BG_STYLES["bg-dark"] }}>
+                      <div className="text-sm font-bold text-foreground mb-3 leading-snug">{lbVariant.hook}</div>
+                      <div className="text-xs text-muted-foreground mb-2">{lbVariant.headline}</div>
+                      {lbVariant.subhead && (
+                        <div className="text-[11px] text-muted-foreground/70 mb-3">{lbVariant.subhead}</div>
+                      )}
+                      {lbVariant.bullets.length > 0 && (
+                        <ul className="list-none space-y-1">
+                          {lbVariant.bullets.map((b, i) => (
+                            <li key={i} className="text-[10px] text-muted-foreground/60 pl-3 relative">
+                              <span className="absolute left-0">·</span>{b}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Details */}
             <div className="flex-1 flex flex-col gap-3 overflow-y-auto max-h-[80vh]">

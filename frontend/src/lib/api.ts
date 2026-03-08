@@ -65,6 +65,9 @@ export interface CompletionCheckResponse {
 
 export interface GenerateBatchRequest {
   project: {
+    id: string;
+    name: string;
+    status: string;
     brand: {
       name: string;
       category: string;
@@ -78,6 +81,16 @@ export interface GenerateBatchRequest {
         visualDesc: string;
       };
     };
+    compliance?: {
+      level: string;
+      forbidden_claims: string[];
+      disclaimer: string;
+    };
+    foundation?: FoundationData;
+    angles?: Array<{
+      name: string;
+      perf_tag: 'winner' | 'proven' | 'comp' | 'untested';
+    }>;
   };
   batch_config: {
     count: number;
@@ -121,6 +134,48 @@ export interface GenerateBatchResponse {
   };
 }
 
+export interface ProductInfo {
+  name: string;
+  url: string;
+  promise: string;
+  offer: string;
+  visualDesc: string;
+  price?: string;
+  description?: string;
+  image_url?: string;
+}
+
+// Variant type for image generation (subset of store Variant)
+export interface ImageGenerationVariant {
+  id: string;
+  angle: string;
+  mode: "A" | "B" | "C";
+  format: string;
+  hook: string;
+  headline: string;
+  subhead: string;
+  bullets: string[];
+  cta: string;
+  imgNote: string;
+  bg: string;
+  status: "pending" | "approved" | "skipped";
+  imageB64: string | null;
+  image_url?: string;
+}
+
+export interface ImageGenerationRequest {
+  variants: ImageGenerationVariant[];
+  product_info: ProductInfo;
+  mode: "competitor" | "stock" | "ai";
+  competitor_image?: string;
+}
+
+export interface ImageGenerationResponse {
+  variants: ImageGenerationVariant[];
+  generated_count: number;
+  failed_count: number;
+}
+
 export interface HealthResponse {
   status: string;
   version: string;
@@ -131,20 +186,27 @@ export interface HealthResponse {
 }
 
 async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options?.headers,
-    },
-  });
+  try {
+    const response = await fetch(url, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+      },
+    });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`API error: ${response.status} - ${error}`);
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`API error: ${response.status} - ${error}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      throw new Error(`Cannot connect to backend at ${API_BASE_URL}. Please ensure the backend server is running.`);
+    }
+    throw error;
   }
-
-  return response.json();
 }
 
 export const api = {
@@ -164,6 +226,9 @@ export const api = {
       body: JSON.stringify({
         project: request.project,
         batch_config: request.batch_config,
+        foundation: request.project.foundation,
+        angles: request.project.angles,
+        compliance: request.project.compliance,
       }),
     });
   },
@@ -194,6 +259,13 @@ export const api = {
     if (path.startsWith("http")) return path;
     if (path.startsWith("/")) return `${API_BASE_URL}${path}`;
     return `${API_BASE_URL}/${path}`;
+  },
+
+  async generateImages(request: ImageGenerationRequest): Promise<ImageGenerationResponse> {
+    return fetchJson(`${API_BASE_URL}/generate/images`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
   },
 };
 

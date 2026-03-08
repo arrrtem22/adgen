@@ -58,6 +58,15 @@ class BatchConfig(BaseModel):
     modeRatio: dict[str, int] = {"A": 50, "B": 30, "C": 20}
 
 
+class BatchGenerateRequest(BaseModel):
+    """Request model for batch generation endpoint."""
+    project: Project
+    batch_config: BatchConfig
+    foundation: Optional[FoundationData] = None
+    angles: Optional[list[Angle]] = None
+    compliance: Optional[Compliance] = None
+
+
 class GenerateRequest(BaseModel):
     mode: Literal["competitor", "stock", "ai"]
     product_url: HttpUrl
@@ -66,6 +75,7 @@ class GenerateRequest(BaseModel):
     previous_winners: Optional[list[str]] = None
     project: Optional[Project] = None
     batch_config: Optional[BatchConfig] = None
+    foundation: Optional[FoundationData] = None
 
 
 class MockMetrics(BaseModel):
@@ -146,3 +156,35 @@ class FoundationGenerationRequest(BaseModel):
 class FoundationGenerationResponse(BaseModel):
     foundation: FoundationData
     angles: list[Angle]
+
+
+class VariantForImageGen(BaseModel):
+    """Minimal variant data needed for image generation."""
+    id: str
+    angle: str
+    mode: Literal["A", "B", "C"]
+    format: str
+    hook: str
+    headline: str
+    subhead: Optional[str] = ""
+    bullets: list[str] = []
+    cta: Optional[str] = ""
+    imgNote: Optional[str] = ""
+    bg: Optional[str] = "bg-dark"
+    status: Literal["pending", "approved", "skipped"] = "pending"
+    imageB64: Optional[str] = None
+
+
+class ImageGenerationRequest(BaseModel):
+    """Request model for generating images for approved variants."""
+    variants: list[VariantForImageGen]
+    product_info: ProductInfo
+    mode: Literal["competitor", "stock", "ai"] = "ai"
+    competitor_image: Optional[str] = None  # base64 encoded for competitor mode
+
+
+class ImageGenerationResponse(BaseModel):
+    """Response model with generated images."""
+    variants: list[VariantForImageGen]
+    generated_count: int
+    failed_count: int

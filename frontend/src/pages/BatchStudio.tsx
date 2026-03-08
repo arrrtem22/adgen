@@ -9,7 +9,7 @@ type Filter = "all" | "pending" | "approved" | "skipped";
 const BatchStudio = () => {
   const navigate = useNavigate();
   const [state, setState] = useState<AppState>(loadState());
-  const [dryRun, setDryRun] = useState(true);
+  const [dryRun, setDryRun] = useState(false);
   const [selectedAngles, setSelectedAngles] = useState<Set<string>>(
     new Set(loadState().project.angles.slice(0, 2).map((a) => a.name))
   );
@@ -20,7 +20,9 @@ const BatchStudio = () => {
   const [focus, setFocus] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [backendReady, setBackendReady] = useState<boolean | null>(null);
-  const [imageMode, setImageMode] = useState<"stock" | "ai" | "competitor">("stock");
+  const [imageMode, setImageMode] = useState<"stock" | "ai" | "competitor">("ai");
+  const [generatingImages, setGeneratingImages] = useState(false);
+  const [imageGenProgress, setImageGenProgress] = useState({ done: 0, total: 0 });
 
   const variants = state.batch.variants;
   const filtered = filter === "all" ? variants : variants.filter((v) => v.status === filter);
@@ -126,10 +128,25 @@ const BatchStudio = () => {
       });
     } else {
       // Call real backend API
+      console.log("Calling backend API with foundation data:", {
+        hasFoundation: !!state.project.foundation,
+        foundationStatus: state.project.foundation ? {
+          research: state.project.foundation.research.status,
+          avatar: state.project.foundation.avatar.status,
+          context: state.project.foundation.context.status,
+        } : 'none',
+        angles: state.project.angles.length,
+      });
       try {
         const response = await api.generateBatch({
           project: {
+            id: state.project.id,
+            name: state.project.name,
+            status: state.project.status,
             brand: state.project.brand,
+            compliance: state.project.compliance,
+            foundation: state.project.foundation,
+            angles: state.project.angles,
           },
           batch_config: {
             count: realCount,
@@ -167,7 +184,13 @@ const BatchStudio = () => {
         });
       } catch (err) {
         console.error("Generation failed:", err);
-        setError(err instanceof Error ? err.message : "Failed to generate ads. Please try again.");
+        const errorMessage = err instanceof Error ? err.message : "Failed to generate ads. Please try again.";
+        setError(errorMessage);
+        
+        // Log more details about the error
+        if (err instanceof Error && 'cause' in err) {
+          console.error("Error cause:", (err as any).cause);
+        }
 
         // Fall back to dry run mode with seed variants
         const fallbackVariants: Variant[] = SEED_VARIANTS.slice(0, realCount).map((v) => ({
@@ -189,6 +212,63 @@ const BatchStudio = () => {
 
   const progressPct = genProgress.total ? Math.round((genProgress.done / genProgress.total) * 100) : 0;
 
+  const handleOutput = async () => {
+    if (generatingImages) return;
+    
+    const approvedVariants = variants.filter((v) => v.status === "approved");
+    if (approvedVariants.length === 0) return;
+
+    setGeneratingImages(true);
+    setImageGenProgress({ done: 0, total: approvedVariants.length });
+    setError(null);
+
+    try {
+      // Build product info from project
+      const productInfo = {
+        name: state.project.brand.product.name,
+        url: state.project.brand.product.url,
+        promise: state.project.brand.product.promise,
+        offer: state.project.brand.product.offer,
+        visualDesc: state.project.brand.product.visualDesc,
+      };
+
+      // Call image generation API
+      const response = await api.generateImages({
+        variants: approvedVariants,
+        product_info: productInfo,
+        mode: imageMode,
+      });
+
+      // Update variants with generated images
+      const updatedVariants = variants.map((v) => {
+        const generated = response.variants.find((gv) => gv.id === v.id);
+        if (generated && generated.imageB64) {
+          return { ...v, imageB64: generated.imageB64 };
+        }
+        return v;
+      });
+
+      // Save state with images
+      const newState = {
+        ...state,
+        batch: {
+          ...state.batch,
+          variants: updatedVariants,
+        },
+      };
+      saveState(newState);
+
+      // Navigate to output
+      navigate("/output");
+    } catch (err) {
+      console.error("Image generation failed:", err);
+      const errorMessage = err instanceof Error ? err.message : "Failed to generate images. Please try again.";
+      setError(errorMessage);
+    } finally {
+      setGeneratingImages(false);
+    }
+  };
+
   const modeTagClass = (m: string) => m === "A" ? "t-cyan" : m === "B" ? "t-accent" : "t-purple";
   const perfTag = (angle: string) => state.project.angles.find((a) => a.name === angle)?.perf_tag || "untested";
   const perfTagClass: Record<string, string> = { winner: "t-accent", proven: "t-accent", comp: "t-cyan", untested: "t-muted" };
@@ -198,8 +278,16 @@ const BatchStudio = () => {
       topbarTitle={`${state.project.name} — Batch Studio`}
       topbarExtra={
         <div className="flex items-center gap-[7px] font-mono text-[10px] text-muted-foreground">
-          <div className={`w-[7px] h-[7px] rounded-full ${generating ? "bg-warn shadow-[0_0_6px_hsl(var(--warn))] animate-pulse" : variants.length ? "bg-primary shadow-[0_0_6px_hsl(var(--primary))]" : "bg-muted-foreground"}`} />
-          <span>{generating ? "generating" : variants.length ? `batch ${state.batch.num} ready` : "idle"}</span>
+          <div className={`w-[7px] h-[7px] rounded-full ${
+            generatingImages 
+              ? "bg-pink shadow-[0_0_6px_hsl(var(--pink))] animate-pulse" 
+              : generating 
+                ? "bg-warn shadow-[0_0_6px_hsl(var(--warn))] animate-pulse" 
+                : variants.length 
+                  ? "bg-primary shadow-[0_0_6px_hsl(var(--primary))]" 
+                  : "bg-muted-foreground"
+          }`} />
+          <span>{generatingImages ? "generating images" : generating ? "generating copy" : variants.length ? `batch ${state.batch.num} ready` : "idle"}</span>
         </div>
       }
     >
@@ -270,32 +358,50 @@ const BatchStudio = () => {
             <ConfigSection dotColor="bg-primary" title="Image Mode">
               <div className="grid grid-cols-3 gap-1.5 mb-2">
                 {[
-                  { mode: "A", label: "Ref Edit", color: "text-secondary", borderColor: "border-secondary/15" },
-                  { mode: "B", label: "Overlay", color: "text-primary", borderColor: "border-primary/15" },
-                  { mode: "C", label: "Generate", color: "text-accent", borderColor: "border-accent/15" },
+                  { mode: "stock", label: "Stock", desc: "Unsplash + overlay", color: "text-secondary" },
+                  { mode: "ai", label: "AI Gen", desc: "Gemini 3.1 Flash", color: "text-primary" },
+                  { mode: "competitor", label: "Comp", desc: "Match style", color: "text-accent" },
                 ].map((m) => (
-                  <div key={m.mode} className={`text-center py-[7px] px-1.5 rounded-[7px] border ${m.borderColor}`}>
-                    <div className={`font-mono text-[8px] ${m.color} mb-0.5`}>Mode {m.mode}</div>
-                    <div className="text-[9px] font-semibold">{m.label}</div>
-                    <div className="font-mono text-[8px] text-primary">✓ ready</div>
-                  </div>
+                  <button
+                    key={m.mode}
+                    onClick={() => setImageMode(m.mode as "stock" | "ai" | "competitor")}
+                    className={`text-center py-[7px] px-1.5 rounded-[7px] border transition-all ${
+                      imageMode === m.mode 
+                        ? "border-primary bg-primary/[0.08]" 
+                        : "border-border2 hover:border-primary/30"
+                    }`}
+                  >
+                    <div className={`font-mono text-[8px] ${m.color} mb-0.5`}>{m.label}</div>
+                    <div className="text-[9px] font-semibold">{m.desc}</div>
+                    {imageMode === m.mode && <div className="font-mono text-[8px] text-primary mt-0.5">✓ selected</div>}
+                  </button>
                 ))}
               </div>
-              <div className="flex justify-between font-mono text-[8px] text-muted-foreground mb-1">
-                <span>A 50%</span><span>B 30%</span><span>C 20%</span>
-              </div>
-              <div className="h-1.5 bg-border rounded-sm overflow-hidden flex">
-                <div className="bg-secondary" style={{ width: "50%" }} />
-                <div className="bg-primary" style={{ width: "30%" }} />
-                <div className="bg-accent" style={{ width: "20%" }} />
+              <div className="font-mono text-[8px] text-muted-foreground text-center">
+                Images generated on Output using gemini-3.1-flash-image-preview
               </div>
             </ConfigSection>
+
+            {/* Backend status */}
+            <div className={`flex items-center justify-between p-2.5 rounded-[7px] border ${backendReady ? "bg-primary/[0.03] border-primary/15" : "bg-warn/[0.03] border-warn/15"}`}>
+              <div>
+                <div className={`font-mono text-[10px] ${backendReady ? "text-primary" : "text-warn"}`}>
+                  {backendReady === null ? "Checking backend..." : backendReady ? "Backend Ready" : "Backend Offline"}
+                </div>
+                <div className="font-mono text-[8px] text-muted-foreground">
+                  {backendReady ? "Will call API to generate ads" : "Will use seed data (no API)"}
+                </div>
+              </div>
+              <div className={`w-2 h-2 rounded-full ${backendReady ? "bg-primary animate-pulse" : "bg-warn"}`} />
+            </div>
 
             {/* Dry run */}
             <div className="flex items-center justify-between p-2.5 bg-warn/[0.03] border border-warn/15 rounded-[7px]">
               <div>
-                <div className="font-mono text-[10px] text-warn">Dry Run</div>
-                <div className="font-mono text-[8px] text-muted-foreground">Copy only · no image calls</div>
+                <div className="font-mono text-[10px] text-warn">Dry Run {dryRun ? "(ON)" : "(OFF)"}</div>
+                <div className="font-mono text-[8px] text-muted-foreground">
+                  {dryRun ? "Using seed data (no API call)" : "Will call backend API"}
+                </div>
               </div>
               <button
                 onClick={() => setDryRun(!dryRun)}
@@ -307,16 +413,21 @@ const BatchStudio = () => {
 
             {/* Generate */}
             <button
-              onClick={startGeneration}
+              onClick={() => {
+                console.log("Generate button clicked", { dryRun, backendReady, hasFoundation: !!state.project.foundation });
+                startGeneration();
+              }}
               disabled={generating}
               className={`w-full py-3 font-sans text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                 generating
                   ? "bg-surface2 text-warn border border-warn/25 cursor-default"
-                  : "bg-primary text-primary-foreground hover:opacity-90"
+                  : dryRun 
+                    ? "bg-warn text-warn-foreground hover:opacity-90"
+                    : "bg-primary text-primary-foreground hover:opacity-90"
               }`}
             >
               {generating && <div className="w-3 h-3 rounded-full border-2 border-transparent border-t-current animate-spin" />}
-              {generating ? "Generating…" : variants.length ? "Regenerate" : "Generate Batch"}
+              {generating ? "Generating…" : dryRun ? "Generate (Dry Run)" : variants.length ? "Regenerate (API)" : "Generate Batch (API)"}
             </button>
           </div>
         </div>
@@ -382,19 +493,30 @@ const BatchStudio = () => {
           {variants.length > 0 && (
             <div className="border-t border-pink bg-pink/[0.03] px-4 py-2.5 flex items-center gap-3.5 shrink-0">
               <div className="flex-1">
-                <div className="text-xs font-bold text-pink mb-1">Ready to proceed?</div>
+                <div className="text-xs font-bold text-pink mb-1">
+                  {generatingImages ? "Generating images..." : "Ready to proceed?"}
+                </div>
                 <div className="flex gap-3.5">
                   <span className="font-mono text-[9px] text-muted-foreground">{counts.approved} approved</span>
                   <span className="font-mono text-[9px] text-muted-foreground">{counts.pending} pending</span>
                   <span className="font-mono text-[9px] text-muted-foreground">{counts.skipped} skipped</span>
                 </div>
+                {generatingImages && (
+                  <div className="mt-2 h-1 bg-border rounded-full overflow-hidden">
+                    <div 
+                      className="h-full bg-pink transition-all duration-300" 
+                      style={{ width: `${(imageGenProgress.done / imageGenProgress.total) * 100}%` }}
+                    />
+                  </div>
+                )}
               </div>
               <button
-                disabled={!(counts.approved > 0 && counts.pending === 0)}
-                onClick={() => { saveState(state); navigate("/output"); }}
-                className="text-[11px] font-bold px-5 py-2 rounded-lg bg-pink text-primary-foreground shrink-0 transition-all hover:opacity-90 disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed"
+                disabled={!(counts.approved > 0 && counts.pending === 0) || generatingImages}
+                onClick={handleOutput}
+                className="text-[11px] font-bold px-5 py-2 rounded-lg bg-pink text-primary-foreground shrink-0 transition-all hover:opacity-90 disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed flex items-center gap-2"
               >
-                → Output
+                {generatingImages && <div className="w-3 h-3 rounded-full border-2 border-transparent border-t-current animate-spin" />}
+                {generatingImages ? "Generating..." : "→ Output"}
               </button>
             </div>
           )}
@@ -432,17 +554,7 @@ const VariantCard = ({
   onSkip: () => void;
 }) => {
   const [expanded, setExpanded] = useState(false);
-  const [imageError, setImageError] = useState(false);
   const bg = BG_STYLES[v.bg] || BG_STYLES["bg-dark"];
-  const hasRealImage = v.imageB64 && !v.imageB64.startsWith("data:image") && !v.imageB64.startsWith("/placeholder");
-
-  // Get image URL - handle both full URLs and backend paths
-  const getImageUrl = (path: string | null): string => {
-    if (!path) return "";
-    if (path.startsWith("http")) return path;
-    if (path.startsWith("/")) return `http://localhost:8000${path}`;
-    return path;
-  };
 
   return (
     <div
@@ -451,22 +563,35 @@ const VariantCard = ({
       }`}
       style={{ animationDelay: `${index * 40}ms` }}
     >
-      {/* Thumb */}
+      {/* Schema Preview (replacing image) */}
       <div 
-        className="h-40 relative overflow-hidden rounded-t-[10px]" 
-        style={hasRealImage && !imageError ? undefined : { background: bg }}
+        className="h-40 relative overflow-hidden rounded-t-[10px] p-2.5"
+        style={{ background: bg }}
       >
-        {hasRealImage && !imageError ? (
-          <img
-            src={getImageUrl(v.imageB64)}
-            alt={v.headline}
-            className="w-full h-full object-cover"
-            onError={() => setImageError(true)}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-[28px] opacity-15">🐕</div>
-        )}
-        <div className={`absolute top-1.5 right-1.5 tag ${modeTagClass}`}>Mode {v.mode}</div>
+        <div className="h-full flex flex-col text-[10px] leading-tight overflow-hidden">
+          {/* Hook - most prominent */}
+          <div className="font-bold text-foreground mb-1 line-clamp-2">{v.hook}</div>
+          {/* Headline */}
+          <div className="text-muted-foreground mb-1.5 line-clamp-1">{v.headline}</div>
+          {/* Subhead - if space allows */}
+          {v.subhead && (
+            <div className="text-[9px] text-muted-foreground/70 line-clamp-2 mb-1">{v.subhead}</div>
+          )}
+          {/* Bullets - compact */}
+          {v.bullets.length > 0 && (
+            <ul className="list-none space-y-0.5 mt-auto">
+              {v.bullets.slice(0, 2).map((b, i) => (
+                <li key={i} className="text-[8px] text-muted-foreground/60 pl-2 relative">
+                  <span className="absolute left-0">·</span>{b.slice(0, 40)}{b.length > 40 ? '...' : ''}
+                </li>
+              ))}
+              {v.bullets.length > 2 && (
+                <li className="text-[8px] text-muted-foreground/40 pl-2">+{v.bullets.length - 2} more</li>
+              )}
+            </ul>
+          )}
+        </div>
+        <div className={`absolute top-1.5 right-1.5 tag ${modeTagClass}`}>{v.mode}</div>
       </div>
 
       {/* Body */}

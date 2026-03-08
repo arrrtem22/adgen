@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before any other imports
 
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -12,9 +12,10 @@ import base64
 from models.schemas import (
     GenerateRequest, GenerateResponse, AdVariation, MockMetrics,
     ScrapeRequest, ScrapeResponse, HealthResponse,
-    Project, BatchConfig,
+    Project, BatchConfig, BatchGenerateRequest,
     FoundationGenerationRequest, FoundationGenerationResponse,
-    FoundationData, FoundationDoc, CompletionStatus
+    FoundationData, FoundationDoc, CompletionStatus,
+    ImageGenerationRequest, ImageGenerationResponse
 )
 from services.scraper import scrape_product
 from services.ad_generator import generate_ad_copy_variations
@@ -151,18 +152,41 @@ async def generate_ads(request: GenerateRequest):
 
 @app.post("/generate/batch")
 async def generate_batch(
-    project: Project,
-    batch_config: BatchConfig,
+    request: Request,
     mode: str = "stock",
     iteration: bool = False,
-    previous_winners: list[str] = None
+    previous_winners: str = None  # Comma-separated string
 ):
     """
     Generate a full batch of ad variations based on frontend state.
     
     This endpoint matches the frontend's batch generation flow.
+    Uses foundation documents (research, avatar, beliefs, positioning, context, angles)
+    to generate high-quality, research-driven ad copy.
     """
     try:
+        # Parse the request body manually from raw JSON
+        body = await request.json()
+        project_data = body.get("project", {})
+        batch_config_data = body.get("batch_config", {})
+        foundation_raw = body.get("foundation")
+        angles_data = body.get("angles", [])
+        compliance_raw = body.get("compliance")
+        
+        # Parse previous_winners from comma-separated string
+        previous_winners_list = None
+        if previous_winners:
+            previous_winners_list = [w.strip() for w in previous_winners.split(",") if w.strip()]
+        
+        # Convert to Pydantic models
+        from models.schemas import Project, BatchConfig, FoundationData, Angle, Compliance
+        
+        project = Project(**project_data)
+        batch_config = BatchConfig(**batch_config_data)
+        foundation = FoundationData(**foundation_raw) if foundation_raw else None
+        angles = [Angle(**a) for a in angles_data] if angles_data else []
+        compliance = Compliance(**compliance_raw) if compliance_raw else None
+        
         # Build product info from project
         product_info = {
             "title": project.brand.product.name,
@@ -174,12 +198,36 @@ async def generate_batch(
             "price": "",  # Could be extracted from offer
         }
         
-        # Generate variations
+        # Build foundation docs dict for ad generator
+        foundation_docs = None
+        if foundation:
+            foundation_docs = {
+                "research": foundation.research.content if foundation.research.status == "done" else "",
+                "avatar": foundation.avatar.content if foundation.avatar.status == "done" else "",
+                "beliefs": foundation.beliefs.content if foundation.beliefs.status == "done" else "",
+                "positioning": foundation.positioning.content if foundation.positioning.status == "done" else "",
+                "context": foundation.context.content if foundation.context.status == "done" else "",
+                "angles": foundation.anglesDoc.content if foundation.anglesDoc.status == "done" else "",
+            }
+        
+        # Build compliance data if available
+        compliance_data = None
+        if compliance:
+            compliance_data = {
+                "level": compliance.level,
+                "forbidden_claims": compliance.forbidden_claims,
+                "disclaimer": compliance.disclaimer,
+            }
+        
+        # Generate variations using foundation data
         variations = generate_ad_copy_variations(
             product_info=product_info,
             iteration=iteration,
-            previous_winners=previous_winners,
-            count=batch_config.count
+            previous_winners=previous_winners_list,
+            count=batch_config.count,
+            foundation_data=foundation_docs,
+            compliance_data=compliance_data,
+            selected_angles=batch_config.angles,
         )
         
         # Assign modes based on ratio
@@ -196,26 +244,24 @@ async def generate_batch(
             else:
                 modes.append("C")
         
-        # Update variations with assigned modes
+        # Update variations with assigned modes and ensure angle alignment
         for i, var in enumerate(variations):
             var["mode"] = modes[i]
             # Filter by selected angles if specified
             if batch_config.angles:
                 var["angle"] = batch_config.angles[i % len(batch_config.angles)]
         
-        # Generate images
-        variations = generate_images(
-            mode=mode,
-            ad_variations=variations,
-            product_info=product_info,
-            competitor_image=None
-        )
+        # Note: Images are NOT generated here - they will be generated in the next step
+        # Set imageB64 to None for all variations
+        for var in variations:
+            var["imageB64"] = None
+            var["image_url"] = None
         
         # Add metrics
         variations = generate_metrics_for_batch(
             variations,
             iteration=iteration,
-            previous_winners=previous_winners
+            previous_winners=previous_winners_list
         )
         
         # Create batch response
@@ -236,6 +282,76 @@ async def generate_batch(
     except Exception as e:
         import traceback
         print(f"Error in generate_batch: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate/images", response_model=ImageGenerationResponse)
+async def generate_images_for_variants(request: ImageGenerationRequest):
+    """
+    Generate images for approved ad variants using Gemini image model.
+    
+    This endpoint is called after copy review to generate final ad images.
+    Uses gemini-3.1-flash-image-preview for AI image generation.
+    """
+    try:
+        variants = request.variants
+        product_info = request.product_info
+        mode = request.mode
+        competitor_image = request.competitor_image
+        
+        # Convert variants to dict format for image generator
+        ad_variations = []
+        for v in variants:
+            var_dict = {
+                "id": v.id,
+                "headline": v.headline,
+                "subhead": v.subhead or "",
+                "cta": v.cta or "Learn More →",
+                "angle": v.angle,
+                "mode": v.mode,
+                "hook": v.hook or v.headline,
+            }
+            ad_variations.append(var_dict)
+        
+        # Generate images
+        from services.image_generator import generate_images
+        ads_with_images = generate_images(
+            mode=mode,
+            ad_variations=ad_variations,
+            product_info=product_info.dict() if product_info else {},
+            competitor_image=competitor_image
+        )
+        
+        # Build updated variants list with image URLs
+        generated_count = 0
+        failed_count = 0
+        updated_variants = []
+        
+        for i, var in enumerate(variants):
+            if i < len(ads_with_images):
+                image_url = ads_with_images[i].get("image_url")
+                if image_url:
+                    # Create updated variant with image URL
+                    updated_var = var.copy(update={"imageB64": image_url})
+                    updated_variants.append(updated_var)
+                    generated_count += 1
+                else:
+                    updated_variants.append(var)
+                    failed_count += 1
+            else:
+                updated_variants.append(var)
+                failed_count += 1
+        
+        return ImageGenerationResponse(
+            variants=updated_variants,
+            generated_count=generated_count,
+            failed_count=failed_count
+        )
+        
+    except Exception as e:
+        import traceback
+        print(f"Error in generate_images_for_variants: {e}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
