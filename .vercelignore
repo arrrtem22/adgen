@@ -1,19 +1,49 @@
-# Ignore files for Vercel deployment
-node_modules
-frontend/node_modules
-backend/__pycache__
-backend/**/__pycache__
-*.pyc
-.pytest_cache
-.git
-.github
-.vscode
-.idea
-*.log
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Development files
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.venv/
+venv/
+
+# Frontend (built separately)
+frontend/
+node_modules/
+
+# Tests
+backend/test_*.py
+backend/tests/
+tests/
+
+# Documentation
+*.md
+LICENSE
+
+# Git
+.git/
+.gitignore
+
+# Local env files
 .env
 .env.local
 .env.*.local
-README.md
-VERCEL_DEPLOY.md
-GITHUB_SECRETS.md
-.github
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

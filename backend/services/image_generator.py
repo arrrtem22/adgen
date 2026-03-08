@@ -2,13 +2,20 @@ import os
 import base64
 import json
 import re
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import requests
 from io import BytesIO
 import uuid
 from typing import Optional
 
 from services.ai_provider import get_gemini_provider
+
+# Try to import PIL - make it optional for Vercel deployment
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    Image = ImageDraw = ImageFont = ImageFilter = None
 
 # API Keys
 unsplash_key = os.getenv("UNSPLASH_ACCESS_KEY")
@@ -91,13 +98,17 @@ def create_gradient_overlay(image: Image.Image, position: str = "bottom", opacit
 
 
 def add_text_overlay(
-    image: Image.Image,
+    image,
     headline: str,
     subhead: str = "",
     cta: str = "",
     style: str = "bottom"
-) -> Image.Image:
+):
     """Add text overlay to an image."""
+    if not PIL_AVAILABLE:
+        print("Warning: PIL not available, returning image without text overlay")
+        return image
+    
     # Convert to RGBA for compositing
     if image.mode != 'RGBA':
         image = image.convert('RGBA')
@@ -290,6 +301,10 @@ def generate_competitor_based(
 ) -> list[dict]:
     """Generate ads matching competitor style."""
     
+    if not PIL_AVAILABLE:
+        print("Warning: PIL not available, falling back to AI generation for competitor mode")
+        return generate_ai_based(ad_variations, product_info, None)
+    
     # Analyze competitor image if provided
     style = {"text_position": "bottom"}
     if competitor_image:
@@ -367,6 +382,10 @@ def search_unsplash(query: str) -> Optional[str]:
 def generate_stock_based(ad_variations: list[dict], product_info: dict) -> list[dict]:
     """Generate ads using stock images + text overlay."""
     
+    if not PIL_AVAILABLE:
+        print("Warning: PIL not available, falling back to AI generation for stock mode")
+        return generate_ai_based(ad_variations, product_info, None)
+    
     product_title = product_info.get("title", "product")
     keywords = product_title.split()[:3]
     
@@ -416,6 +435,81 @@ def generate_stock_based(ad_variations: list[dict], product_info: dict) -> list[
     return ad_variations
 
 
+def _generate_ai_simple(ad_variations: list[dict], product_info: dict, foundation_data: dict, provider) -> list[dict]:
+    """Generate ads using AI image generation WITHOUT PIL (no text overlays)."""
+    
+    product_title = product_info.get("title", "product")
+    visual_desc = product_info.get("visualDesc", "")
+    
+    # Extract foundation context if available
+    avatar_context = ""
+    positioning_context = ""
+    if foundation_data:
+        avatar = foundation_data.get("avatar", "")
+        positioning = foundation_data.get("positioning", "")
+        if avatar:
+            avatar_context = avatar[:500] if len(avatar) > 500 else avatar
+        if positioning:
+            positioning_context = positioning[:500] if len(positioning) > 500 else positioning
+    
+    for ad in ad_variations:
+        try:
+            # Build generation prompt with text overlay instructions
+            angle = ad.get("angle", "product")
+            headline = strip_emojis(ad.get("headline", ""))
+            hook = strip_emojis(ad.get("hook", ""))
+            cta = strip_emojis(ad.get("cta", "Learn More >"))
+            
+            foundation_section = ""
+            if avatar_context:
+                foundation_section += f"\nTarget Customer: {avatar_context}\n"
+            if positioning_context:
+                foundation_section += f"\nBrand Positioning: {positioning_context}\n"
+            
+            prompt = f"""Professional product photography advertisement for: {product_title}
+
+Visual direction: {visual_desc}
+Style: {angle} advertising aesthetic
+Headline to feature: {headline}
+Concept: {hook}{foundation_section}
+
+Create a compelling, high-quality advertisement image for Facebook/Instagram:
+- Clean professional background
+- Commercial photography style
+- Product-focused composition  
+- Professional lighting
+- Eye-catching and scroll-stopping
+- Square 1:1 format optimized for social media
+- INCLUDE the headline text clearly visible on the image
+- INCLUDE this call-to-action text somewhere on the image: {cta}
+- Bold, readable text overlay style
+- Modern ad aesthetic
+
+High quality, crisp details, professional advertising photography."""
+            
+            print(f"Generating image for ad {ad['id']} (no PIL mode)...")
+            
+            # Generate image using the provider
+            image_data = provider.generate_image(prompt)
+            
+            if image_data:
+                # Save raw image bytes directly without PIL processing
+                filename = f"static/ad_{ad['id']}.png"
+                with open(filename, "wb") as f:
+                    f.write(image_data)
+                ad["image_url"] = f"/static/ad_{ad['id']}.png"
+                print(f"Saved image for ad {ad['id']}")
+            else:
+                print(f"No image data returned for ad {ad['id']}")
+                ad["image_url"] = f"https://via.placeholder.com/1080x1080/8B5CF6/ffffff?text=Ad+{ad['id']}"
+                
+        except Exception as e:
+            print(f"Error generating image for {ad['id']}: {e}")
+            ad["image_url"] = f"https://via.placeholder.com/1080x1080/8B5CF6/ffffff?text=Ad+{ad['id']}"
+    
+    return ad_variations
+
+
 def generate_ai_based(ad_variations: list[dict], product_info: dict, foundation_data: dict = None) -> list[dict]:
     """Generate ads using AI image generation + text overlay."""
     
@@ -425,6 +519,11 @@ def generate_ai_based(ad_variations: list[dict], product_info: dict, foundation_
         # Fallback to stock mode if no API key
         print("No Gemini provider available for image generation, falling back to stock")
         return generate_stock_based(ad_variations, product_info)
+    
+    # Check if PIL is available for image processing
+    if not PIL_AVAILABLE:
+        print("Warning: PIL not available, generating images without text overlays")
+        return _generate_ai_simple(ad_variations, product_info, foundation_data, provider)
     
     product_title = product_info.get("title", "product")
     visual_desc = product_info.get("visualDesc", "")

@@ -1,11 +1,19 @@
+# Core FastAPI
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
-google-generativeai>=0.3.2
-beautifulsoup4>=4.12.3
-requests>=2.31.0
 python-multipart>=0.0.6
 python-dotenv>=1.0.0
 pydantic>=2.5.3
-lxml>=5.1.0
 httpx>=0.26.0
-pillow>=10.2.0
+
+# Web scraping (lightweight)
+beautifulsoup4>=4.12.3
+requests>=2.31.0
+
+# AI providers (both imported lazily, keep both for flexibility)
+anthropic>=0.40.0
+google-generativeai>=0.3.2
+
+# Image processing (Pillow is large, try to exclude or use minimal)
+# Commenting out for now - will handle images via external service or Gemini's native image gen
+# pillow>=10.2.0
