@@ -18,6 +18,8 @@ export default defineConfig(({ mode }) => ({
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
+    // SPA fallback - serve index.html for all routes
+    historyApiFallback: true,
   },
   build: {
     outDir: 'dist',
