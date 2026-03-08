@@ -46,9 +46,35 @@ export interface FormatDoc {
   status: string;
 }
 
+export interface UploadedImage {
+  id: string;
+  name: string;
+  base64: string;
+  mimeType: string;
+  uploadedAt: string;
+}
+
+export interface AdAnalysisBreakdown {
+  imageId: string;
+  hook: string;
+  headline: string;
+  emotionalAngle: string;
+  layout: string;
+  colorPalette: string[];
+  format: string;
+  copyFormulas: string[];
+  whatWorks: string;
+}
+
+export interface AdAnalysis {
+  status: 'empty' | 'analyzing' | 'done' | 'error';
+  updatedAt: string | null;
+  breakdown: AdAnalysisBreakdown[];
+}
+
 export interface Refs {
-  winning_ads: string[];
-  raw_images: string[];
+  winning_ads: UploadedImage[];
+  raw_images: UploadedImage[];
   brand_assets: string[];
   comp_intel: string;
 }
@@ -86,6 +112,24 @@ export interface Batch {
   status: 'idle' | 'generating' | 'reviewing';
 }
 
+export type FoundationDocStatus = 'empty' | 'generating' | 'done' | 'error';
+
+export interface FoundationDoc {
+  content: string;
+  status: FoundationDocStatus;
+  updatedAt: string | null;
+}
+
+export interface Foundation {
+  research: FoundationDoc;
+  avatar: FoundationDoc;
+  beliefs: FoundationDoc;
+  positioning: FoundationDoc;
+  context: FoundationDoc;
+  angles: FoundationDoc;
+  creative_intel: AdAnalysis;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -101,11 +145,24 @@ export interface Project {
 export interface AppState {
   project: Project;
   batch: Batch;
-  settings: { geminiKey: string };
+  foundation: Foundation;
+  settings: { geminiKey: string; claudeKey: string };
   imageLibrary: LibraryImage[];
 }
 
 const KEY = 'adgen_state';
+
+const EMPTY_DOC: FoundationDoc = { content: '', status: 'empty', updatedAt: null };
+
+export const SEED_FOUNDATION: Foundation = {
+  research: { ...EMPTY_DOC },
+  avatar: { ...EMPTY_DOC },
+  beliefs: { ...EMPTY_DOC },
+  positioning: { ...EMPTY_DOC },
+  context: { ...EMPTY_DOC },
+  angles: { ...EMPTY_DOC },
+  creative_intel: { status: 'empty', updatedAt: null, breakdown: [] },
+};
 
 const SEED: AppState = {
   project: {
@@ -137,8 +194,8 @@ const SEED: AppState = {
       disclaimer: 'Results may vary. Visual shaping effect only while wearing the garment. Not a medical device.',
     },
     refs: {
-      winning_ads: ['competitor_shapewear_01.png', 'competitor_01.png', 'winner_jan_01.png'],
-      raw_images: ['lifestyle_gym.png', 'lifestyle_office.png'],
+      winning_ads: [],
+      raw_images: [],
       brand_assets: ['selure_logo.png', 'tank_black.png', 'tank_white.png'],
       comp_intel: '',
     },
@@ -168,7 +225,11 @@ const SEED: AppState = {
     variants: [],
     status: 'idle',
   },
-  settings: { geminiKey: '' },
+  foundation: JSON.parse(JSON.stringify(SEED_FOUNDATION)),
+  settings: {
+    geminiKey: import.meta.env.VITE_GEMINI_KEY || '',
+    claudeKey: import.meta.env.VITE_CLAUDE_KEY || '',
+  },
   imageLibrary: [],
 };
 
@@ -186,15 +247,45 @@ export const SEED_VARIANTS: Omit<Variant, 'status' | 'imageB64'>[] = [
 export function loadState(): AppState {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Migrate: backfill new fields from SEED if missing
+      if (!parsed.foundation) parsed.foundation = JSON.parse(JSON.stringify(SEED_FOUNDATION));
+      if (!parsed.foundation.creative_intel) parsed.foundation.creative_intel = { status: 'empty', updatedAt: null, breakdown: [] };
+      // Always use env vars for API keys
+      parsed.settings = {
+        geminiKey: import.meta.env.VITE_GEMINI_KEY || '',
+        claudeKey: import.meta.env.VITE_CLAUDE_KEY || '',
+      };
+      // Migrate refs from string[] to UploadedImage[]
+      if (parsed.project?.refs) {
+        if (parsed.project.refs.winning_ads?.length && typeof parsed.project.refs.winning_ads[0] === 'string') {
+          parsed.project.refs.winning_ads = [];
+        }
+        if (parsed.project.refs.raw_images?.length && typeof parsed.project.refs.raw_images[0] === 'string') {
+          parsed.project.refs.raw_images = [];
+        }
+      }
+      return parsed;
+    }
   } catch { /* ignore */ }
   return JSON.parse(JSON.stringify(SEED));
 }
 
 export function saveState(state: AppState) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch { /* ignore */ }
+    // Strip imageB64 before saving — images are stored in IndexedDB
+    const toSave = {
+      ...state,
+      batch: {
+        ...state.batch,
+        variants: state.batch.variants.map((v) => ({ ...v, imageB64: null })),
+      },
+    };
+    localStorage.setItem(KEY, JSON.stringify(toSave));
+  } catch (e) {
+    console.warn('saveState failed (localStorage quota?):', e);
+  }
 }
 
 export const BG_STYLES: Record<string, string> = {
@@ -237,4 +328,86 @@ export function getImagesByCategory(state: AppState, category: ImageCategory): L
 
 export function getImageById(state: AppState, imageId: string): LibraryImage | undefined {
   return state.imageLibrary.find((img) => img.id === imageId);
+}
+
+// Foundation helpers
+export function setFoundationDoc(state: AppState, key: keyof Foundation, doc: Partial<FoundationDoc>): AppState {
+  const newState = {
+    ...state,
+    foundation: {
+      ...state.foundation,
+      [key]: { ...state.foundation[key], ...doc },
+    },
+  };
+  saveState(newState);
+  return newState;
+}
+
+export function resetFoundation(state: AppState): AppState {
+  const newState = { ...state, foundation: JSON.parse(JSON.stringify(SEED_FOUNDATION)) };
+  saveState(newState);
+  return newState;
+}
+
+// Winning ads helpers
+export function addWinningAd(state: AppState, image: UploadedImage): AppState {
+  const newState = {
+    ...state,
+    project: {
+      ...state.project,
+      refs: { ...state.project.refs, winning_ads: [...state.project.refs.winning_ads, image] },
+    },
+  };
+  saveState(newState);
+  return newState;
+}
+
+export function removeWinningAd(state: AppState, id: string): AppState {
+  const newState = {
+    ...state,
+    project: {
+      ...state.project,
+      refs: { ...state.project.refs, winning_ads: state.project.refs.winning_ads.filter((img) => img.id !== id) },
+    },
+  };
+  saveState(newState);
+  return newState;
+}
+
+// Raw images helpers
+export function addRawImage(state: AppState, image: UploadedImage): AppState {
+  const newState = {
+    ...state,
+    project: {
+      ...state.project,
+      refs: { ...state.project.refs, raw_images: [...state.project.refs.raw_images, image] },
+    },
+  };
+  saveState(newState);
+  return newState;
+}
+
+export function removeRawImage(state: AppState, id: string): AppState {
+  const newState = {
+    ...state,
+    project: {
+      ...state.project,
+      refs: { ...state.project.refs, raw_images: state.project.refs.raw_images.filter((img) => img.id !== id) },
+    },
+  };
+  saveState(newState);
+  return newState;
+}
+
+// Ad analysis helper
+export function setAdAnalysis(state: AppState, analysis: Partial<AdAnalysis>): AppState {
+  const newState = {
+    ...state,
+    foundation: {
+      ...state.foundation,
+      creative_intel: { ...state.foundation.creative_intel, ...analysis },
+    },
+  };
+  saveState(newState);
+  return newState;
 }

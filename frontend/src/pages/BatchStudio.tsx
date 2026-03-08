@@ -1,8 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import AppLayout from "@/components/AppLayout";
-import { loadState, saveState, SEED_VARIANTS, BG_STYLES, type AppState, type Variant } from "@/lib/store";
-import api from "@/lib/api";
+import { loadState, saveState, BG_STYLES, type AppState, type Variant } from "@/lib/store";
+
+function parseClaudeJSON(text: string) {
+  const clean = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(clean);
+}
 
 type Filter = "all" | "pending" | "approved" | "skipped";
 
@@ -19,8 +27,6 @@ const BatchStudio = () => {
   const [count, setCount] = useState(8);
   const [focus, setFocus] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [backendReady, setBackendReady] = useState<boolean | null>(null);
-  const [imageMode, setImageMode] = useState<"stock" | "ai" | "competitor">("stock");
 
   const variants = state.batch.variants;
   const filtered = filter === "all" ? variants : variants.filter((v) => v.status === filter);
@@ -32,13 +38,6 @@ const BatchStudio = () => {
   };
 
   const persist = useCallback((s: AppState) => { setState(s); saveState(s); }, []);
-
-  // Check backend health on mount
-  useEffect(() => {
-    api.checkHealth()
-      .then((health) => setBackendReady(health.status === "ok"))
-      .catch(() => setBackendReady(false));
-  }, []);
 
   const toggleAngle = (name: string) => {
     setSelectedAngles((prev) => {
@@ -81,15 +80,54 @@ const BatchStudio = () => {
     });
   };
 
+  const updateVariant = (id: string, patch: Partial<Variant>) => {
+    setState((s) => {
+      const newState = {
+        ...s,
+        batch: {
+          ...s.batch,
+          variants: s.batch.variants.map((v) => v.id === id ? { ...v, ...patch } : v),
+        },
+      };
+      saveState(newState);
+      return newState;
+    });
+  };
+
   const startGeneration = async () => {
     if (generating) return;
     setGenerating(true);
     setError(null);
 
+    const claudeKey = import.meta.env.VITE_CLAUDE_KEY || "";
+    if (!claudeKey) {
+      setError("Add VITE_CLAUDE_KEY in .env to generate variants");
+      setGenerating(false);
+      return;
+    }
+
     const realCount = Math.min(20, Math.max(1, count));
     const batchNum = (state.project.batchCount || 0) + 1;
+    const angleList = [...selectedAngles];
 
-    // Build initial batch state
+    // Create skeleton slots
+    const skeletons: Variant[] = Array.from({ length: realCount }, (_, i) => ({
+      id: String(i + 1).padStart(3, "0"),
+      angle: "",
+      mode: "A" as const,
+      format: "",
+      hook: "",
+      headline: "",
+      subhead: "",
+      bullets: [],
+      cta: "",
+      imgNote: "",
+      bg: "bg-dark",
+      status: "pending" as const,
+      imageB64: null,
+      _generating: true,
+    }));
+
     const newState: AppState = {
       ...state,
       project: { ...state.project, batchCount: batchNum },
@@ -97,91 +135,149 @@ const BatchStudio = () => {
         id: "batch_" + Date.now(),
         num: batchNum,
         date: new Date().toISOString().slice(0, 10),
-        config: { count: realCount, focus, angles: [...selectedAngles], dryRun, modeRatio: { A: 50, B: 30, C: 20 } },
-        variants: [],
+        config: { count: realCount, focus, angles: angleList, dryRun, modeRatio: { A: 50, B: 30, C: 20 } },
+        variants: skeletons,
         status: "generating",
       },
     };
     persist(newState);
     setGenProgress({ done: 0, total: realCount });
 
-    if (dryRun) {
-      // Use seed variants for dry run (no backend call)
-      const newVariants: Variant[] = SEED_VARIANTS.slice(0, realCount).map((v) => ({
-        ...v,
-        status: "pending" as const,
-        imageB64: null,
-      }));
+    // Build context from foundation
+    const foundation = state.foundation;
+    const contextJson = foundation.context.status === "done" && foundation.context.content
+      ? foundation.context.content
+      : "";
 
-      // Simulate staggered generation
-      for (let i = 0; i < newVariants.length; i++) {
-        await new Promise((r) => setTimeout(r, i === 0 ? 300 : 600));
-        setGenProgress({ done: i + 1, total: newVariants.length });
+    const brand = state.project.brand;
+    const prod = brand.product;
+    const comp = state.project.compliance;
+
+    const systemPrompt = `You are a world-class direct-response copywriter specializing in performance ad creatives. Write scroll-stopping ad copy variants.
+
+RULES:
+- Hook: first-person testimonial OR bold fear/urgency statement. Max 15 words. No fluff.
+- Headline: 3-6 words. Active voice. No punctuation at end. No duplicate words.
+- Subhead: 5-9 words. Supports headline. Lowercase.
+- Bullets: exactly 3. Max 5 words each. Benefit-focused.
+- CTA: 2-4 words + arrow. Action verb first.
+- imgNote: 1 sentence describing the visual for image generation.
+- Every variant must feel emotionally distinct.
+- Output ONLY a valid JSON array. No explanation, no markdown, no backticks.`;
+
+    const userPrompt = `PRODUCT: ${prod.name}
+BRAND: ${brand.name} (${brand.category})
+PROMISE: ${prod.promise}
+OFFER: ${prod.offer}
+VOICE: ${brand.voice}
+VISUAL: ${prod.visualDesc}
+COMPLIANCE LEVEL: ${comp.level}
+FORBIDDEN CLAIMS: ${comp.forbidden_claims.join(", ")}
+DISCLAIMER: ${comp.disclaimer}
+BATCH FOCUS: ${focus || "none"}
+
+${contextJson ? `STRATEGIC CONTEXT:\n${contextJson}\n` : ""}
+ANGLES TO USE (cycle through these for the variants):
+${angleList.join(", ")}
+
+ANGLE PERFORMANCE:
+${state.project.angles.map((a) => `${a.name}: ${a.perf_tag}`).join("\n")}
+
+Generate exactly ${realCount} ad copy variants.
+Assign angles from the list above cycling round-robin.
+Assign modes cycling: A, B, C, A, B, A, C, B...
+Assign bg cycling: bg-dark, bg-warm, bg-cool, bg-neutral...
+
+Return a JSON array where each element has exactly these fields:
+{
+  "id": "zero-padded string (001, 002...)",
+  "angle": "string",
+  "mode": "A | B | C",
+  "bg": "bg-dark | bg-warm | bg-cool | bg-neutral",
+  "hook": "string",
+  "headline": "string",
+  "subhead": "string",
+  "bullets": ["string", "string", "string"],
+  "cta": "string",
+  "imgNote": "string",
+  "format": "string"
+}`;
+
+    try {
+      console.log(`[BatchStudio] Generating ${realCount} variants via Claude…`);
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": claudeKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 4000,
+          system: systemPrompt,
+          messages: [{ role: "user", content: userPrompt }],
+        }),
+      });
+
+      if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+      const data = await res.json();
+      const rawText = data.content[0].text;
+
+      let parsed: Variant[];
+      try {
+        parsed = parseClaudeJSON(rawText);
+      } catch {
+        throw new Error("Failed to parse Claude response as JSON");
+      }
+
+      if (!Array.isArray(parsed)) throw new Error("Claude response is not an array");
+
+      // Stagger reveal — copy only. Images are generated on the Output page.
+      for (let i = 0; i < parsed.length; i++) {
+        await new Promise((r) => setTimeout(r, i === 0 ? 200 : 400));
+
+        const v = parsed[i];
+        const variant: Variant = {
+          id: v.id || String(i + 1).padStart(3, "0"),
+          angle: v.angle || "",
+          mode: (v.mode || "A") as Variant["mode"],
+          format: v.format || "ad",
+          hook: v.hook || "",
+          headline: v.headline || "",
+          subhead: v.subhead || "",
+          bullets: Array.isArray(v.bullets) ? v.bullets : [],
+          cta: v.cta || "",
+          imgNote: v.imgNote || "",
+          bg: v.bg || "bg-dark",
+          status: "pending",
+          imageB64: null,
+        };
+
+        setState((s) => {
+          const updatedVariants = [...s.batch.variants];
+          updatedVariants[i] = variant;
+          const ns = { ...s, batch: { ...s.batch, variants: updatedVariants } };
+          saveState(ns);
+          return ns;
+        });
+        setGenProgress({ done: i + 1, total: parsed.length });
       }
 
       setState((s) => {
-        const done = { ...s, batch: { ...s.batch, variants: newVariants, status: "reviewing" as const } };
+        const done = { ...s, batch: { ...s.batch, status: "reviewing" as const } };
         saveState(done);
         return done;
       });
-    } else {
-      // Call real backend API
-      try {
-        const response = await api.generateBatch({
-          project: {
-            brand: state.project.brand,
-          },
-          batch_config: {
-            count: realCount,
-            focus,
-            angles: [...selectedAngles],
-            dryRun: false,
-            modeRatio: { A: 50, B: 30, C: 20 },
-          },
-          mode: imageMode,
-        });
-
-        // Map backend response to frontend Variant format
-        const newVariants: Variant[] = response.batch.variants.map((v) => ({
-          id: v.id,
-          angle: v.angle,
-          mode: v.mode,
-          format: v.format,
-          hook: v.hook,
-          headline: v.headline,
-          subhead: v.subhead,
-          bullets: v.bullets,
-          cta: v.cta,
-          imgNote: v.imgNote,
-          bg: v.bg || "bg-dark",
-          status: "pending",
-          imageB64: v.image_url || null,
-        }));
-
-        setGenProgress({ done: newVariants.length, total: newVariants.length });
-
-        setState((s) => {
-          const done = { ...s, batch: { ...s.batch, variants: newVariants, status: "reviewing" as const } };
-          saveState(done);
-          return done;
-        });
-      } catch (err) {
-        console.error("Generation failed:", err);
-        setError(err instanceof Error ? err.message : "Failed to generate ads. Please try again.");
-
-        // Fall back to dry run mode with seed variants
-        const fallbackVariants: Variant[] = SEED_VARIANTS.slice(0, realCount).map((v) => ({
-          ...v,
-          status: "pending" as const,
-          imageB64: null,
-        }));
-
-        setState((s) => {
-          const fallback = { ...s, batch: { ...s.batch, variants: fallbackVariants, status: "reviewing" as const } };
-          saveState(fallback);
-          return fallback;
-        });
-      }
+    } catch (err) {
+      console.error("Generation failed:", err);
+      setError(err instanceof Error ? err.message : "Generation failed");
+      setState((s) => {
+        const failed = { ...s, batch: { ...s.batch, variants: [], status: "idle" as const } };
+        saveState(failed);
+        return failed;
+      });
     }
 
     setGenerating(false);
@@ -192,6 +288,8 @@ const BatchStudio = () => {
   const modeTagClass = (m: string) => m === "A" ? "t-cyan" : m === "B" ? "t-accent" : "t-purple";
   const perfTag = (angle: string) => state.project.angles.find((a) => a.name === angle)?.perf_tag || "untested";
   const perfTagClass: Record<string, string> = { winner: "t-accent", proven: "t-accent", comp: "t-cyan", untested: "t-muted" };
+
+  const hasClaudeKey = !!import.meta.env.VITE_CLAUDE_KEY;
 
   return (
     <AppLayout
@@ -236,7 +334,7 @@ const BatchStudio = () => {
                 <label className="block font-mono text-[9px] tracking-widest uppercase text-muted-foreground mb-1">Variant Count</label>
                 <input type="number" value={count} onChange={(e) => setCount(+e.target.value)} min={1} max={20} className="field-input" />
               </div>
-              <div>
+              <div className="mb-2.5">
                 <label className="block font-mono text-[9px] tracking-widest uppercase text-muted-foreground mb-1">Batch Focus Note</label>
                 <input value={focus} onChange={(e) => setFocus(e.target.value)} placeholder="e.g. test fear angle headlines" className="field-input" />
               </div>
@@ -305,13 +403,22 @@ const BatchStudio = () => {
               </button>
             </div>
 
+            {/* API status */}
+            {!hasClaudeKey && (
+              <div className="p-2.5 rounded-[7px] border border-destructive/15 bg-destructive/[0.03]">
+                <div className="font-mono text-[9px] text-destructive">No Claude key — set VITE_CLAUDE_KEY in .env</div>
+              </div>
+            )}
+
             {/* Generate */}
             <button
               onClick={startGeneration}
-              disabled={generating}
+              disabled={generating || !hasClaudeKey}
               className={`w-full py-3 font-sans text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${
                 generating
                   ? "bg-surface2 text-warn border border-warn/25 cursor-default"
+                  : !hasClaudeKey
+                  ? "bg-muted text-muted-foreground cursor-not-allowed"
                   : "bg-primary text-primary-foreground hover:opacity-90"
               }`}
             >
@@ -353,7 +460,7 @@ const BatchStudio = () => {
 
           {/* Grid */}
           <div className="flex-1 overflow-y-auto p-3 grid grid-cols-2 gap-2.5 content-start min-h-0">
-            {filtered.length === 0 && (
+            {filtered.length === 0 && !generating && (
               <div className="col-span-2 flex flex-col items-center justify-center py-20 gap-3 text-center">
                 <div className="text-4xl opacity-10">◈</div>
                 <div className="text-sm font-semibold text-muted-foreground">
@@ -364,22 +471,43 @@ const BatchStudio = () => {
                 </div>
               </div>
             )}
-            {filtered.map((v, i) => (
-              <VariantCard
-                key={v.id}
-                variant={v}
-                index={i}
-                modeTagClass={modeTagClass(v.mode)}
-                perfTagName={perfTag(v.angle)}
-                perfTagClass={perfTagClass[perfTag(v.angle)]}
-                onApprove={() => setVariantStatus(v.id, "approve")}
-                onSkip={() => setVariantStatus(v.id, "skip")}
-              />
-            ))}
+            {filtered.map((v, i) => {
+              const isSkeleton = !v.hook && !v.headline && generating;
+              if (isSkeleton) {
+                return (
+                  <div key={v.id} className="bg-surface border border-border rounded-[10px] flex flex-col" style={{ animationDelay: `${i * 40}ms`, minHeight: 160 }}>
+                    <div className="px-3 py-2.5 border-b border-border flex items-center gap-2">
+                      <div className="h-[18px] w-14 bg-surface2 rounded animate-shimmer" />
+                      <div className="h-[18px] w-20 bg-surface2 rounded animate-shimmer" />
+                      <div className="ml-auto w-4 h-4 rounded-full border-2 border-transparent border-t-warn animate-spin" />
+                    </div>
+                    <div className="p-3 space-y-2.5 flex-1">
+                      <div className="h-3.5 bg-surface2 rounded animate-shimmer" style={{ width: "85%" }} />
+                      <div className="h-3 bg-surface2 rounded animate-shimmer" style={{ width: "100%" }} />
+                      <div className="h-3 bg-surface2 rounded animate-shimmer" style={{ width: "55%" }} />
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <VariantCard
+                  key={v.id}
+                  variant={v}
+                  index={i}
+                  modeTagClass={modeTagClass(v.mode)}
+                  perfTagName={perfTag(v.angle)}
+                  perfTagClass={perfTagClass[perfTag(v.angle)]}
+                  onApprove={() => setVariantStatus(v.id, "approve")}
+                  onSkip={() => setVariantStatus(v.id, "skip")}
+                  onUpdate={(patch) => updateVariant(v.id, patch)}
+                />
+              );
+            })}
           </div>
 
           {/* Proceed bar */}
-          {variants.length > 0 && (
+          {variants.length > 0 && !generating && (
             <div className="border-t border-pink bg-pink/[0.03] px-4 py-2.5 flex items-center gap-3.5 shrink-0">
               <div className="flex-1">
                 <div className="text-xs font-bold text-pink mb-1">Ready to proceed?</div>
@@ -422,6 +550,7 @@ const VariantCard = ({
   perfTagClass,
   onApprove,
   onSkip,
+  onUpdate,
 }: {
   variant: Variant;
   index: number;
@@ -430,19 +559,13 @@ const VariantCard = ({
   perfTagClass: string;
   onApprove: () => void;
   onSkip: () => void;
+  onUpdate: (patch: Partial<Variant>) => void;
 }) => {
   const [expanded, setExpanded] = useState(false);
-  const [imageError, setImageError] = useState(false);
   const bg = BG_STYLES[v.bg] || BG_STYLES["bg-dark"];
-  const hasRealImage = v.imageB64 && !v.imageB64.startsWith("data:image") && !v.imageB64.startsWith("/placeholder");
 
-  // Get image URL - handle both full URLs and backend paths
-  const getImageUrl = (path: string | null): string => {
-    if (!path) return "";
-    if (path.startsWith("http")) return path;
-    if (path.startsWith("/")) return `http://localhost:8000${path}`;
-    return path;
-  };
+  // BatchStudio is copy-only — always show compact text layout, images are for Output
+  const hasImage = false;
 
   return (
     <div
@@ -451,30 +574,22 @@ const VariantCard = ({
       }`}
       style={{ animationDelay: `${index * 40}ms` }}
     >
-      {/* Thumb */}
-      <div 
-        className="h-40 relative overflow-hidden rounded-t-[10px]" 
-        style={hasRealImage && !imageError ? undefined : { background: bg }}
-      >
-        {hasRealImage && !imageError ? (
-          <img
-            src={getImageUrl(v.imageB64)}
-            alt={v.headline}
-            className="w-full h-full object-cover"
-            onError={() => setImageError(true)}
-          />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center text-[28px] opacity-15">🐕</div>
-        )}
-        <div className={`absolute top-1.5 right-1.5 tag ${modeTagClass}`}>Mode {v.mode}</div>
-      </div>
+      {/* Thumb — only when image exists */}
+      {hasImage && (
+        <div className="h-40 relative overflow-hidden rounded-t-[10px]">
+          <img src={v.imageB64!} alt={v.headline} className="w-full h-full object-cover" />
+          <div className={`absolute top-1.5 right-1.5 tag ${modeTagClass}`}>Mode {v.mode}</div>
+        </div>
+      )}
 
-      {/* Body */}
-      <div className="p-3 border-b border-border">
-        <div className="flex items-center gap-1.5 mb-2 flex-wrap">
-          <span className="font-mono text-[9px] text-muted-foreground">#{v.id}</span>
+      {/* Compact header bar — only when NO image */}
+      {!hasImage && (
+        <div className="px-3 py-2 border-b border-border flex items-center gap-1.5 flex-wrap">
+          <span className={`tag ${modeTagClass}`}>Mode {v.mode}</span>
           <span className="tag t-purple">{v.angle}</span>
           <span className={`tag ${perfTagClass}`}>{perfTagName}</span>
+          <span className="font-mono text-[8px] text-border2">|</span>
+          <span className="font-mono text-[9px] text-muted-foreground">#{v.id}</span>
           <button
             onClick={() => setExpanded(!expanded)}
             className="ml-auto font-mono text-[8px] px-[7px] py-[2px] rounded border border-border2 bg-transparent text-muted-foreground hover:text-foreground transition-colors"
@@ -482,14 +597,39 @@ const VariantCard = ({
             {expanded ? "– less" : "+ more"}
           </button>
         </div>
-        <div className="font-mono text-[8px] tracking-wider uppercase text-muted-foreground mb-1">
-          Hook <span className="opacity-40 text-[7px]">click to edit</span>
-        </div>
-        <div className="text-[11px] font-bold leading-snug mb-2 p-[4px_7px] rounded border border-transparent hover:bg-surface2 hover:border-border2 cursor-text transition-colors">
+      )}
+
+      {/* Body */}
+      <div className="p-3 border-b border-border">
+        {/* Tags row — only when image exists (compact header handles this otherwise) */}
+        {hasImage && (
+          <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+            <span className="font-mono text-[9px] text-muted-foreground">#{v.id}</span>
+            <span className="tag t-purple">{v.angle}</span>
+            <span className={`tag ${perfTagClass}`}>{perfTagName}</span>
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="ml-auto font-mono text-[8px] px-[7px] py-[2px] rounded border border-border2 bg-transparent text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {expanded ? "– less" : "+ more"}
+            </button>
+          </div>
+        )}
+        <div
+          contentEditable
+          suppressContentEditableWarning
+          onBlur={(e) => onUpdate({ hook: (e.target as HTMLDivElement).innerText.trim() })}
+          className="text-[13px] font-bold leading-snug mb-2 p-[4px_7px] rounded border border-transparent hover:bg-surface2 hover:border-border2 cursor-text transition-colors outline-none"
+        >
           {v.hook}
         </div>
         <div className="font-mono text-[8px] tracking-wider uppercase text-muted-foreground mb-1">Headline</div>
-        <div className="text-[10px] text-muted-foreground p-[4px_7px] rounded border border-transparent hover:bg-surface2 hover:border-border2 cursor-text transition-colors">
+        <div
+          contentEditable
+          suppressContentEditableWarning
+          onBlur={(e) => onUpdate({ headline: (e.target as HTMLDivElement).innerText.trim() })}
+          className="text-[10px] text-muted-foreground p-[4px_7px] rounded border border-transparent hover:bg-surface2 hover:border-border2 cursor-text transition-colors outline-none"
+        >
           {v.headline}
         </div>
       </div>
