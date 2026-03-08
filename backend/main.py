@@ -18,7 +18,8 @@ from models.schemas import (
     GenerateRequest, GenerateResponse, AdVariation, MockMetrics,
     ScrapeRequest, ScrapeResponse, HealthResponse,
     Project, BatchConfig, FoundationData,
-    ImageGenerationRequest, ImageGenerationResponse
+    ImageGenerationRequest, ImageGenerationResponse,
+    BatchGenerateRequest
 )
 from services.scraper import scrape_product
 from services.ad_generator import generate_ad_copy_variations
@@ -153,19 +154,18 @@ async def generate_ads(request: GenerateRequest):
 
 
 @app.post("/generate/batch")
-async def generate_batch(
-    project: Project,
-    batch_config: BatchConfig,
-    mode: str = "stock",
-    iteration: bool = False,
-    previous_winners: list[str] = None
-):
+async def generate_batch(request: BatchGenerateRequest):
     """
     Generate a full batch of ad variations based on frontend state.
     
     This endpoint matches the frontend's batch generation flow.
     """
     try:
+        project = request.project
+        batch_config = request.batch_config
+        mode = request.mode
+        iteration = request.iteration
+        previous_winners = request.previous_winners
         # Build product info from project
         product_info = {
             "title": project.brand.product.name,

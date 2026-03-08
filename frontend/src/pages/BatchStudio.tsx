@@ -1,16 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import AppLayout from "@/components/AppLayout";
 import { loadState, saveState, BG_STYLES, type AppState, type Variant } from "@/lib/store";
-
-function parseClaudeJSON(text: string) {
-  const clean = text
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```\s*$/i, "")
-    .trim();
-  return JSON.parse(clean);
-}
 
 type Filter = "all" | "pending" | "approved" | "skipped";
 
@@ -27,6 +18,7 @@ const BatchStudio = () => {
   const [count, setCount] = useState(8);
   const [focus, setFocus] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [backendReady, setBackendReady] = useState<boolean>(true);
 
   const variants = state.batch.variants;
   const filtered = filter === "all" ? variants : variants.filter((v) => v.status === filter);
@@ -145,96 +137,31 @@ const BatchStudio = () => {
     persist(newState);
     setGenProgress({ done: 0, total: realCount });
 
-    // Build context from foundation
-    const foundation = state.foundation;
-    const contextJson = foundation.context.status === "done" && foundation.context.content
-      ? foundation.context.content
-      : "";
-
-    const brand = state.project.brand;
-    const prod = brand.product;
-    const comp = state.project.compliance;
-
-    const systemPrompt = `You are a world-class direct-response copywriter specializing in performance ad creatives. Write scroll-stopping ad copy variants.
-
-RULES:
-- Hook: first-person testimonial OR bold fear/urgency statement. Max 15 words. No fluff.
-- Headline: 3-6 words. Active voice. No punctuation at end. No duplicate words.
-- Subhead: 5-9 words. Supports headline. Lowercase.
-- Bullets: exactly 3. Max 5 words each. Benefit-focused.
-- CTA: 2-4 words + arrow. Action verb first.
-- imgNote: 1 sentence describing the visual for image generation.
-- Every variant must feel emotionally distinct.
-- Output ONLY a valid JSON array. No explanation, no markdown, no backticks.`;
-
-    const userPrompt = `PRODUCT: ${prod.name}
-BRAND: ${brand.name} (${brand.category})
-PROMISE: ${prod.promise}
-OFFER: ${prod.offer}
-VOICE: ${brand.voice}
-VISUAL: ${prod.visualDesc}
-COMPLIANCE LEVEL: ${comp.level}
-FORBIDDEN CLAIMS: ${comp.forbidden_claims.join(", ")}
-DISCLAIMER: ${comp.disclaimer}
-BATCH FOCUS: ${focus || "none"}
-
-${contextJson ? `STRATEGIC CONTEXT:\n${contextJson}\n` : ""}
-ANGLES TO USE (cycle through these for the variants):
-${angleList.join(", ")}
-
-ANGLE PERFORMANCE:
-${state.project.angles.map((a) => `${a.name}: ${a.perf_tag}`).join("\n")}
-
-Generate exactly ${realCount} ad copy variants.
-Assign angles from the list above cycling round-robin.
-Assign modes cycling: A, B, C, A, B, A, C, B...
-Assign bg cycling: bg-dark, bg-warm, bg-cool, bg-neutral...
-
-Return a JSON array where each element has exactly these fields:
-{
-  "id": "zero-padded string (001, 002...)",
-  "angle": "string",
-  "mode": "A | B | C",
-  "bg": "bg-dark | bg-warm | bg-cool | bg-neutral",
-  "hook": "string",
-  "headline": "string",
-  "subhead": "string",
-  "bullets": ["string", "string", "string"],
-  "cta": "string",
-  "imgNote": "string",
-  "format": "string"
-}`;
-
     try {
-      console.log(`[BatchStudio] Generating ${realCount} variants via Claude…`);
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      console.log(`[BatchStudio] Generating ${realCount} variants via backend…`);
+      
+      // Call backend API
+      const res = await fetch("/api/generate/batch", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": claudeKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5",
-          max_tokens: 4000,
-          system: systemPrompt,
-          messages: [{ role: "user", content: userPrompt }],
+          project: state.project,
+          batch_config: {
+            count: realCount,
+            focus: focus || "",
+            angles: angleList,
+            dryRun: dryRun,
+            modeRatio: { A: 50, B: 30, C: 20 }
+          },
+          mode: "stock", // Images generated later on Output page
         }),
       });
 
       if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
       const data = await res.json();
-      const rawText = data.content[0].text;
+      const parsed: Variant[] = data.variations || [];
 
-      let parsed: Variant[];
-      try {
-        parsed = parseClaudeJSON(rawText);
-      } catch {
-        throw new Error("Failed to parse Claude response as JSON");
-      }
-
-      if (!Array.isArray(parsed)) throw new Error("Claude response is not an array");
+      if (!Array.isArray(parsed)) throw new Error("Backend response is not an array");
 
       // Stagger reveal — copy only. Images are generated on the Output page.
       for (let i = 0; i < parsed.length; i++) {
@@ -291,8 +218,12 @@ Return a JSON array where each element has exactly these fields:
   const perfTag = (angle: string) => state.project.angles.find((a) => a.name === angle)?.perf_tag || "untested";
   const perfTagClass: Record<string, string> = { winner: "t-accent", proven: "t-accent", comp: "t-cyan", untested: "t-muted" };
 
-  // API keys are set on backend, frontend just checks backend health
-  const hasApiKey = backendReady !== false;
+  // Check backend health on mount
+  useEffect(() => {
+    fetch("/api/health")
+      .then((r) => setBackendReady(r.ok))
+      .catch(() => setBackendReady(false));
+  }, []);
 
   return (
     <AppLayout

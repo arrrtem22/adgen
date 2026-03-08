@@ -85,6 +85,14 @@ class GenerateRequest(BaseModel):
     batch_config: Optional[BatchConfig] = None
 
 
+class BatchGenerateRequest(BaseModel):
+    project: Project
+    batch_config: BatchConfig
+    mode: str = "stock"
+    iteration: bool = False
+    previous_winners: Optional[list[str]] = None
+
+
 class MockMetrics(BaseModel):
     ctr: float
     impressions: int
