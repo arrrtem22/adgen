@@ -168,6 +168,7 @@ export interface ImageGenerationRequest {
   product_info: ProductInfo;
   mode: "competitor" | "stock" | "ai";
   competitor_image?: string;
+  foundation?: FoundationData;
 }
 
 export interface ImageGenerationResponse {

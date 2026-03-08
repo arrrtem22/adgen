@@ -181,6 +181,7 @@ class ImageGenerationRequest(BaseModel):
     product_info: ProductInfo
     mode: Literal["competitor", "stock", "ai"] = "ai"
     competitor_image: Optional[str] = None  # base64 encoded for competitor mode
+    foundation: Optional[FoundationData] = None  # Foundation documents for context
 
 
 class ImageGenerationResponse(BaseModel):

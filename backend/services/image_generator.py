@@ -1,11 +1,34 @@
 import os
 import base64
 import json
+import re
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import requests
 from io import BytesIO
 import uuid
 from typing import Optional
+
+
+def strip_emojis(text: str) -> str:
+    """Remove emojis from text as they don't render properly on images."""
+    if not text:
+        return text
+    # Remove common arrow emojis and symbols that don't render
+    text = text.replace('→', '>').replace('←', '<').replace('↑', '^').replace('↓', 'v')
+    text = text.replace('✓', '✔').replace('✕', 'x').replace('✗', 'x')
+    # Remove emoji using regex pattern
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "]+", 
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text).strip()
 
 # Configure Gemini - use new SDK
 try:
@@ -180,7 +203,8 @@ def add_text_overlay(
         draw.text((x+1, y_subhead+1), subhead, font=subhead_font, fill=(0, 0, 0, 150))
         draw.text((x, y_subhead), subhead, font=subhead_font, fill=(255, 255, 255, 230))
     
-    # Draw CTA button
+    # Draw CTA button (strip emojis as they don't render properly)
+    cta = strip_emojis(cta) if cta else cta
     if cta:
         cta_y = height - int(height * 0.12)
         bbox = draw.textbbox((0, 0), cta, font=cta_font)
@@ -214,17 +238,23 @@ def generate_images(
     mode: str,
     ad_variations: list[dict],
     product_info: dict,
-    competitor_image: str = None
+    competitor_image: str = None,
+    foundation_data: dict = None
 ) -> list[dict]:
     """
     Generate images for all ad variations based on mode.
     """
     ensure_static_dir()
     
+    # Pass foundation data to generation functions
+    kwargs = {}
+    if foundation_data:
+        kwargs['foundation_data'] = foundation_data
+    
     if mode == "competitor":
-        return generate_competitor_based(ad_variations, product_info, competitor_image)
+        return generate_competitor_based(ad_variations, product_info, competitor_image, **kwargs)
     elif mode == "stock":
-        return generate_stock_based(ad_variations, product_info)
+        return generate_stock_based(ad_variations, product_info, **kwargs)
     elif mode == "ai":
         return generate_ai_based(ad_variations, product_info)
     else:
@@ -412,15 +442,27 @@ def generate_stock_based(ad_variations: list[dict], product_info: dict) -> list[
     return ad_variations
 
 
-def generate_ai_based(ad_variations: list[dict], product_info: dict) -> list[dict]:
+def generate_ai_based(ad_variations: list[dict], product_info: dict, foundation_data: dict = None) -> list[dict]:
     """Generate ads using AI image generation + text overlay."""
     
     if not api_key:
         print("No API key, falling back to stock mode")
-        return generate_stock_based(ad_variations, product_info)
+        return generate_stock_based(ad_variations, product_info, foundation_data)
     
     product_title = product_info.get("title", "product")
     visual_desc = product_info.get("visualDesc", "")
+    
+    # Extract foundation context if available
+    avatar_context = ""
+    positioning_context = ""
+    if foundation_data:
+        avatar = foundation_data.get("avatar", "")
+        positioning = foundation_data.get("positioning", "")
+        if avatar:
+            # Take first 500 chars of avatar for context
+            avatar_context = avatar[:500] if len(avatar) > 500 else avatar
+        if positioning:
+            positioning_context = positioning[:500] if len(positioning) > 500 else positioning
     
     for ad in ad_variations:
         try:
@@ -428,6 +470,14 @@ def generate_ai_based(ad_variations: list[dict], product_info: dict) -> list[dic
             angle = ad.get("angle", "product")
             headline = ad.get("headline", "")
             hook = ad.get("hook", "")
+            img_note = ad.get("imgNote", "")
+            
+            # Build comprehensive prompt with foundation data
+            foundation_section = ""
+            if avatar_context:
+                foundation_section += f"\nTarget Customer: {avatar_context}\n"
+            if positioning_context:
+                foundation_section += f"\nBrand Positioning: {positioning_context}\n"
             
             prompt = f"""Professional product photography for: {product_title}
 
@@ -435,6 +485,7 @@ Visual direction: {visual_desc}
 Style: {angle} advertising aesthetic
 Headline theme: {headline}
 Hook concept: {hook}
+Image direction: {img_note}{foundation_section}
 
 Create a compelling, high-quality product image for a Facebook/Instagram ad:
 - Clean professional background
@@ -443,7 +494,8 @@ Create a compelling, high-quality product image for a Facebook/Instagram ad:
 - Professional lighting
 - Eye-catching and scroll-stopping
 - Square format optimized for social media
-- No text overlay needed (will be added later)
+- No text overlay needed (text will be added later)
+- No emojis or special characters in the image
 
 High quality, crisp details, 1:1 aspect ratio."""
             

@@ -299,6 +299,7 @@ async def generate_images_for_variants(request: ImageGenerationRequest):
         product_info = request.product_info
         mode = request.mode
         competitor_image = request.competitor_image
+        foundation = request.foundation
         
         # Convert variants to dict format for image generator
         ad_variations = []
@@ -311,8 +312,20 @@ async def generate_images_for_variants(request: ImageGenerationRequest):
                 "angle": v.angle,
                 "mode": v.mode,
                 "hook": v.hook or v.headline,
+                "imgNote": v.imgNote or "",
             }
             ad_variations.append(var_dict)
+        
+        # Build foundation data dict if available
+        foundation_data = None
+        if foundation:
+            foundation_data = {
+                "research": foundation.research.content if foundation.research.status == "done" else "",
+                "avatar": foundation.avatar.content if foundation.avatar.status == "done" else "",
+                "beliefs": foundation.beliefs.content if foundation.beliefs.status == "done" else "",
+                "positioning": foundation.positioning.content if foundation.positioning.status == "done" else "",
+                "context": foundation.context.content if foundation.context.status == "done" else "",
+            }
         
         # Generate images
         from services.image_generator import generate_images
@@ -320,7 +333,8 @@ async def generate_images_for_variants(request: ImageGenerationRequest):
             mode=mode,
             ad_variations=ad_variations,
             product_info=product_info.dict() if product_info else {},
-            competitor_image=competitor_image
+            competitor_image=competitor_image,
+            foundation_data=foundation_data
         )
         
         # Build updated variants list with image URLs

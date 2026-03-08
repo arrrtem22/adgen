@@ -10,6 +10,7 @@ const Output = () => {
   const variants = state.batch?.variants || [];
   const [filter, setFilter] = useState<Filter>("all");
   const [lbIndex, setLbIndex] = useState<number | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const filtered = filter === "all" ? variants : variants.filter((v) => v.status === filter);
   const counts = {
@@ -19,6 +20,46 @@ const Output = () => {
   };
 
   const modeClass = (m: string) => (m === "A" ? "t-cyan" : m === "B" ? "t-accent" : "t-purple");
+
+  // Helper to download a single image
+  const downloadImage = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (e) {
+      console.error('Download failed:', e);
+    }
+  };
+
+  // Download all approved variants with images
+  const downloadAll = async () => {
+    const variantsWithImages = variants.filter((v) => v.status === "approved" && v.imageB64 && !v.imageB64.startsWith("/placeholder") && !v.imageB64.startsWith("http"));
+    if (variantsWithImages.length === 0) return;
+    
+    setDownloading(true);
+    for (const v of variantsWithImages) {
+      const imageUrl = api.getImageUrl(v.imageB64!);
+      await downloadImage(imageUrl, `ad_${v.id}_${v.angle.replace(/\s+/g, '_')}.png`);
+      // Small delay between downloads
+      await new Promise(r => setTimeout(r, 200));
+    }
+    setDownloading(false);
+  };
+
+  // Download single variant
+  const downloadSingle = async () => {
+    if (!lbVariant || !lbVariant.imageB64 || lbVariant.imageB64.startsWith("/placeholder")) return;
+    const imageUrl = api.getImageUrl(lbVariant.imageB64);
+    await downloadImage(imageUrl, `ad_${lbVariant.id}_${lbVariant.angle.replace(/\s+/g, '_')}.png`);
+  };
 
   // Keyboard nav for lightbox
   useEffect(() => {
@@ -69,8 +110,16 @@ const Output = () => {
             </button>
           ))}
         </div>
-        <button className="text-[11px] font-semibold px-3.5 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1.5">
-          ↓ Download All
+        <button 
+          onClick={downloadAll}
+          disabled={downloading || variants.filter(v => v.status === "approved" && v.imageB64 && !v.imageB64.startsWith("/placeholder")).length === 0}
+          className="text-[11px] font-semibold px-3.5 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1.5 disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed"
+        >
+          {downloading ? (
+            <><div className="w-3 h-3 rounded-full border-2 border-transparent border-t-current animate-spin" /> Downloading...</>
+          ) : (
+            <>↓ Download All</>
+          )}
         </button>
       </div>
 
@@ -222,7 +271,11 @@ const Output = () => {
               )}
 
               <div className="flex gap-2">
-                <button className="flex-1 text-[11px] font-semibold py-2.5 bg-primary text-primary-foreground rounded-[7px] hover:opacity-90 transition-opacity disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed" disabled>
+                <button 
+                  onClick={downloadSingle}
+                  disabled={!lbVariant?.imageB64 || lbVariant.imageB64.startsWith("/placeholder")}
+                  className="flex-1 text-[11px] font-semibold py-2.5 bg-primary text-primary-foreground rounded-[7px] hover:opacity-90 transition-opacity disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed"
+                >
                   ↓ Download
                 </button>
                 <button onClick={() => setLbIndex(null)} className="text-[11px] font-semibold px-3.5 py-2.5 border border-border2 text-muted-foreground rounded-[7px] hover:text-foreground transition-colors">

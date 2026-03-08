@@ -232,11 +232,12 @@ const BatchStudio = () => {
         visualDesc: state.project.brand.product.visualDesc,
       };
 
-      // Call image generation API
+      // Call image generation API with foundation data
       const response = await api.generateImages({
         variants: approvedVariants,
         product_info: productInfo,
         mode: imageMode,
+        foundation: state.project.foundation,
       });
 
       // Update variants with generated images
