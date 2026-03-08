@@ -1,6 +1,13 @@
 // API client for backend communication
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Detect if running on Vercel or local development
+const isVercel = import.meta.env.VERCEL || window.location.hostname.includes('vercel.app');
+const isProduction = import.meta.env.PROD;
+
+// Set API base URL
+// - On Vercel: use '/api' prefix for serverless functions
+// - Local dev: use localhost:8000
+const API_BASE_URL = import.meta.env.VITE_API_URL || (isVercel || isProduction ? '/api' : 'http://localhost:8000');
 
 export interface GenerateBatchRequest {
   project: {

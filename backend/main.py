@@ -2,22 +2,27 @@ from fastapi import FastAPI, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from dotenv import load_dotenv
 import os
 import uuid
 import base64
 
+# Load .env for local development (Vercel uses env vars from dashboard)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from models.schemas import (
     GenerateRequest, GenerateResponse, AdVariation, MockMetrics,
     ScrapeRequest, ScrapeResponse, HealthResponse,
-    Project, BatchConfig
+    Project, BatchConfig, FoundationData,
+    ImageGenerationRequest, ImageGenerationResponse
 )
 from services.scraper import scrape_product
 from services.ad_generator import generate_ad_copy_variations
 from services.image_generator import generate_images
 from services.metrics import generate_mock_metrics, generate_metrics_for_batch, simulate_ab_test
-
-load_dotenv()
 
 app = FastAPI(
     title="AI Ad Creative Generator API",
@@ -285,6 +290,80 @@ async def serve_static(path: str):
     if os.path.exists(file_path):
         return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="File not found")
+
+
+@app.post("/generate/images", response_model=ImageGenerationResponse)
+async def generate_images_for_variants(request: ImageGenerationRequest):
+    """
+    Generate images for approved ad variants using Gemini image model.
+    """
+    try:
+        variants = request.variants
+        product_info = request.product_info
+        mode = request.mode
+        competitor_image = request.competitor_image
+        foundation = request.foundation
+        
+        ad_variations = []
+        for v in variants:
+            var_dict = {
+                "id": v.id,
+                "headline": v.headline,
+                "subhead": v.subhead or "",
+                "cta": v.cta or "Learn More →",
+                "angle": v.angle,
+                "mode": v.mode,
+                "hook": v.hook or v.headline,
+                "imgNote": v.imgNote or "",
+            }
+            ad_variations.append(var_dict)
+        
+        foundation_data = None
+        if foundation:
+            foundation_data = {
+                "research": foundation.research.content if foundation.research.status == "done" else "",
+                "avatar": foundation.avatar.content if foundation.avatar.status == "done" else "",
+                "beliefs": foundation.beliefs.content if foundation.beliefs.status == "done" else "",
+                "positioning": foundation.positioning.content if foundation.positioning.status == "done" else "",
+                "context": foundation.context.content if foundation.context.status == "done" else "",
+            }
+        
+        ads_with_images = generate_images(
+            mode=mode,
+            ad_variations=ad_variations,
+            product_info=product_info.dict() if product_info else {},
+            competitor_image=competitor_image,
+            foundation_data=foundation_data
+        )
+        
+        generated_count = 0
+        failed_count = 0
+        updated_variants = []
+        
+        for i, var in enumerate(variants):
+            if i < len(ads_with_images):
+                image_url = ads_with_images[i].get("image_url")
+                if image_url:
+                    updated_var = var.copy(update={"imageB64": image_url})
+                    updated_variants.append(updated_var)
+                    generated_count += 1
+                else:
+                    updated_variants.append(var)
+                    failed_count += 1
+            else:
+                updated_variants.append(var)
+                failed_count += 1
+        
+        return ImageGenerationResponse(
+            variants=updated_variants,
+            generated_count=generated_count,
+            failed_count=failed_count
+        )
+    except Exception as e:
+        import traceback
+        print(f"Error in generate_images_for_variants: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

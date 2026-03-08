@@ -32,6 +32,30 @@ class Compliance(BaseModel):
     disclaimer: str
 
 
+class CompletionStatus(BaseModel):
+    brandConfig: bool = False
+    foundation: bool = False
+    refs: bool = False
+    intel: bool = False
+
+
+class FoundationDoc(BaseModel):
+    name: str
+    status: str = "pending"
+    content: str = ""
+    desc: str = ""
+    type: str = "doc"
+
+
+class FoundationData(BaseModel):
+    research: FoundationDoc
+    avatar: FoundationDoc
+    beliefs: FoundationDoc
+    positioning: FoundationDoc
+    context: FoundationDoc
+    anglesDoc: FoundationDoc
+
+
 class Project(BaseModel):
     id: str
     name: str
@@ -39,6 +63,8 @@ class Project(BaseModel):
     brand: BrandConfig
     compliance: Compliance
     angles: list[Angle]
+    foundation: Optional[FoundationData] = None
+    completion: Optional[CompletionStatus] = None
 
 
 class BatchConfig(BaseModel):
@@ -109,3 +135,36 @@ class ScrapeResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     version: str = "1.0.0"
+
+
+class VariantForImageGen(BaseModel):
+    """Minimal variant data needed for image generation."""
+    id: str
+    angle: str
+    mode: Literal["A", "B", "C"]
+    format: str
+    hook: str
+    headline: str
+    subhead: Optional[str] = ""
+    bullets: list[str] = []
+    cta: Optional[str] = ""
+    imgNote: Optional[str] = ""
+    bg: Optional[str] = "bg-dark"
+    status: Literal["pending", "approved", "skipped"] = "pending"
+    imageB64: Optional[str] = None
+
+
+class ImageGenerationRequest(BaseModel):
+    """Request model for generating images for approved variants."""
+    variants: list[VariantForImageGen]
+    product_info: ProductInfo
+    mode: Literal["competitor", "stock", "ai"] = "ai"
+    competitor_image: Optional[str] = None
+    foundation: Optional[FoundationData] = None
+
+
+class ImageGenerationResponse(BaseModel):
+    """Response model with generated images."""
+    variants: list[VariantForImageGen]
+    generated_count: int
+    failed_count: int
