@@ -17,6 +17,10 @@
       "destination": "api/index.py"
     },
     {
+      "source": "/foundation/(.*)",
+      "destination": "api/index.py"
+    },
+    {
       "source": "/scrape",
       "destination": "api/index.py"
     },
@@ -31,6 +35,10 @@
     {
       "source": "/static/(.*)",
       "destination": "api/index.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ],
   "env": {
