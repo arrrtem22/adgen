@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, APIRouter, HTTPException, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -41,6 +41,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Create router with /api prefix for Vercel compatibility
+api_router = APIRouter(prefix="/api")
+
 # Serve static files (generated images) - skip on Vercel (read-only filesystem)
 STATIC_DIR = os.getenv("STATIC_DIR", "static")
 try:
@@ -52,13 +55,13 @@ except OSError:
     print("Warning: Cannot create static directories (read-only filesystem). Using base64 images only.")
 
 
-@app.get("/", response_model=HealthResponse)
+@api_router.get("/", response_model=HealthResponse)
 def read_root():
     """Health check endpoint."""
     return {"status": "ok", "version": "1.0.0"}
 
 
-@app.get("/health", response_model=HealthResponse)
+@api_router.get("/health", response_model=HealthResponse)
 def health_check():
     """Detailed health check."""
     gemini_key = bool(os.getenv("GEMINI_API_KEY"))
@@ -74,7 +77,7 @@ def health_check():
     }
 
 
-@app.post("/scrape", response_model=ScrapeResponse)
+@api_router.post("/scrape", response_model=ScrapeResponse)
 async def scrape_url(request: ScrapeRequest):
     """
     Scrape product information from a URL.
@@ -86,7 +89,7 @@ async def scrape_url(request: ScrapeRequest):
         raise HTTPException(status_code=500, detail=f"Scraping failed: {str(e)}")
 
 
-@app.post("/generate", response_model=GenerateResponse)
+@api_router.post("/generate", response_model=GenerateResponse)
 async def generate_ads(request: GenerateRequest):
     """
     Main endpoint to generate ad variations.
@@ -158,7 +161,7 @@ async def generate_ads(request: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/generate/batch")
+@api_router.post("/generate/batch")
 async def generate_batch(request: BatchGenerateRequest):
     """
     Generate a full batch of ad variations based on frontend state.
@@ -248,7 +251,7 @@ async def generate_batch(request: BatchGenerateRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/upload/competitor")
+@api_router.post("/upload/competitor")
 async def upload_competitor(image: UploadFile = File(...)):
     """
     Upload a competitor image for analysis.
@@ -277,7 +280,7 @@ async def upload_competitor(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
 
-@app.post("/metrics/simulate")
+@api_router.post("/metrics/simulate")
 async def simulate_metrics(variations: list[dict], days: int = 7):
     """
     Simulate A/B test metrics over time.
@@ -289,7 +292,7 @@ async def simulate_metrics(variations: list[dict], days: int = 7):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/static/{path:path}")
+@api_router.get("/static/{path:path}")
 async def serve_static(path: str):
     """Serve static files."""
     file_path = f"static/{path}"
@@ -298,7 +301,7 @@ async def serve_static(path: str):
     raise HTTPException(status_code=404, detail="File not found")
 
 
-@app.post("/generate/images", response_model=ImageGenerationResponse)
+@api_router.post("/generate/images", response_model=ImageGenerationResponse)
 async def generate_images_for_variants(request: ImageGenerationRequest):
     """
     Generate images for approved ad variants using Gemini image model.
@@ -401,7 +404,7 @@ class FoundationGenerationResponse(BaseModel):
     angles: list[dict]
 
 
-@app.post("/foundation/generate", response_model=FoundationGenerationResponse)
+@api_router.post("/foundation/generate", response_model=FoundationGenerationResponse)
 async def generate_foundation(request: FoundationGenerationRequest):
     """
     Generate foundation documents based on brand configuration.
@@ -511,7 +514,7 @@ Provide 6-8 distinct advertising angles with: angle name, hook, proof points, an
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/foundation/check-completion")
+@api_router.post("/foundation/check-completion")
 async def check_foundation_completion(project: dict):
     """
     Check completion status of all project hub steps.
@@ -558,6 +561,15 @@ async def check_foundation_completion(project: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# Include the API router (for Vercel /api prefix compatibility)
+app.include_router(api_router)
+
+# Keep root health check at / for both local and Vercel
+@app.get("/", response_model=HealthResponse)
+def read_root():
+    """Health check endpoint."""
+    return {"status": "ok", "version": "1.0.0"}
 
 if __name__ == "__main__":
     import uvicorn

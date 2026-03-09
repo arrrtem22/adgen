@@ -104,7 +104,7 @@ class AdVariation(BaseModel):
     angle: str
     persona: str
     headline: str
-    copy: str
+    copy_text: str = Field(..., alias="copy")  # Renamed to avoid shadowing BaseModel.copy()
     image_url: str
     mock_metrics: MockMetrics
     # Extended fields for frontend compatibility
@@ -118,6 +118,9 @@ class AdVariation(BaseModel):
     bg: Optional[str] = None
     status: Optional[Literal["pending", "approved", "skipped"]] = "pending"
     imageB64: Optional[str] = None
+    
+    class Config:
+        populate_by_name = True
 
 
 class GenerateResponse(BaseModel):
