@@ -115,7 +115,11 @@ export const api = {
   },
 
   getImageUrl(path: string): string {
+    // Base64 data URI - return as-is
+    if (path.startsWith("data:")) return path;
+    // Full URL - return as-is
     if (path.startsWith("http")) return path;
+    // Path starting with / - prepend API base
     if (path.startsWith("/")) return `${API_BASE_URL}${path}`;
     return `${API_BASE_URL}/${path}`;
   },

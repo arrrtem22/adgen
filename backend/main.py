@@ -41,10 +41,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files (generated images)
-os.makedirs("static", exist_ok=True)
-os.makedirs("static/uploads", exist_ok=True)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Serve static files (generated images) - skip on Vercel (read-only filesystem)
+STATIC_DIR = os.getenv("STATIC_DIR", "static")
+try:
+    os.makedirs(STATIC_DIR, exist_ok=True)
+    os.makedirs(f"{STATIC_DIR}/uploads", exist_ok=True)
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+except OSError:
+    # Vercel has read-only filesystem, skip static file serving
+    print("Warning: Cannot create static directories (read-only filesystem). Using base64 images only.")
 
 
 @app.get("/", response_model=HealthResponse)

@@ -10,6 +10,8 @@ const Output = () => {
   const [state] = useState<AppState>(loadState());
   const [filter, setFilter] = useState<Filter>("all");
   const [lbIndex, setLbIndex] = useState<number | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadingAll, setDownloadingAll] = useState(false);
   const [imgProgress, setImgProgress] = useState({ done: 0, total: 0, generating: false });
   const [images, setImages] = useState<Record<string, string>>({});
   const generatingRef = useRef(false);
@@ -23,6 +25,70 @@ const Output = () => {
   };
 
   const modeClass = (m: string) => (m === "A" ? "t-cyan" : m === "B" ? "t-accent" : "t-purple");
+
+  // Get image URL for display
+  const getImageUrl = (variant: Variant): string => {
+    if (variant.imageB64 && !variant.imageB64.startsWith("/placeholder")) {
+      return api.getImageUrl(variant.imageB64);
+    }
+    return "";
+  };
+
+  // Download single variant with text overlay
+  const downloadVariant = async (variant: Variant) => {
+    const baseUrl = getImageUrl(variant);
+    if (!baseUrl) {
+      alert("No image available for download");
+      return;
+    }
+
+    setDownloading(variant.id);
+    try {
+      const blob = await generateAdImageWithOverlay(baseUrl, {
+        headline: variant.headline,
+        subhead: variant.subhead,
+        cta: variant.cta,
+      });
+      downloadBlob(blob, `ad-${variant.id}-${variant.angle}.png`);
+    } catch (err) {
+      console.error("Failed to generate image:", err);
+      alert("Failed to generate image. Please try again.");
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  // Download all approved variants
+  const downloadAllApproved = async () => {
+    const approved = variants.filter((v) => v.status === "approved");
+    if (approved.length === 0) {
+      alert("No approved variants to download");
+      return;
+    }
+
+    setDownloadingAll(true);
+    try {
+      for (let i = 0; i < approved.length; i++) {
+        const variant = approved[i];
+        const baseUrl = getImageUrl(variant);
+        if (baseUrl) {
+          const blob = await generateAdImageWithOverlay(baseUrl, {
+            headline: variant.headline,
+            subhead: variant.subhead,
+            cta: variant.cta,
+          });
+          downloadBlob(blob, `ad-${variant.id}-${variant.angle}.png`);
+          // Small delay between downloads
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+    } catch (err) {
+      console.error("Failed to download all:", err);
+      alert("Some downloads failed. Please try again.");
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
 
   const getImage = useCallback((v: Variant) => images[v.id] || null, [images]);
 
@@ -87,24 +153,6 @@ const Output = () => {
   const lbVariant = lbIndex !== null ? filtered[lbIndex] : null;
   const imgPct = imgProgress.total ? Math.round((imgProgress.done / imgProgress.total) * 100) : 0;
 
-  const downloadVariant = (v: Variant) => {
-    const src = getImage(v);
-    if (!src) return;
-    const link = document.createElement("a");
-    link.href = src;
-    link.download = `adgen_${state.batch.num}_${v.id}_${v.angle.replace(/\s+/g, "-")}.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const downloadAll = () => {
-    const withImages = filtered.filter((v) => getImage(v));
-    withImages.forEach((v, i) => {
-      setTimeout(() => downloadVariant(v), i * 200);
-    });
-  };
-
   return (
     <AppLayout
       topbarTitle={`${state.project?.name || "Output"} — Output`}
@@ -156,7 +204,7 @@ const Output = () => {
           ))}
         </div>
         <button
-          onClick={downloadAll}
+          onClick={downloadAllApproved}
           disabled={!filtered.some((v) => getImage(v))}
           className="text-[11px] font-semibold px-3.5 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity flex items-center gap-1.5 disabled:bg-border2 disabled:text-muted-foreground disabled:cursor-not-allowed"
         >
@@ -227,7 +275,22 @@ const Output = () => {
                   <span>#{v.id}</span>
                   <span className="tag t-purple">{v.angle}</span>
                 </div>
-                <div className="text-[10px] font-semibold text-foreground leading-snug line-clamp-2">{v.hook}</div>
+                <div className="text-[10px] font-semibold text-foreground leading-snug line-clamp-2 mb-2">{v.hook}</div>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    downloadVariant(v);
+                  }}
+                  disabled={downloading === v.id || !imageUrl}
+                  className="w-full text-[9px] font-semibold py-1.5 bg-primary/10 text-primary rounded hover:bg-primary/20 transition-colors disabled:opacity-50 flex items-center justify-center gap-1"
+                >
+                  {downloading === v.id ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Download className="w-3 h-3" />
+                  )}
+                  Download
+                </button>
               </div>
             </div>
           );

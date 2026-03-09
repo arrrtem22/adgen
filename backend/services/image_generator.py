@@ -59,10 +59,41 @@ def get_vision_model():
 
 def ensure_static_dir():
     """Ensure static directory exists."""
-    os.makedirs("static", exist_ok=True)
+    try:
+        os.makedirs("static", exist_ok=True)
+        return True
+    except OSError:
+        # Read-only filesystem (e.g., Vercel)
+        return False
 
 
-def download_image(url: str) -> Optional[Image.Image]:
+def save_image(image_data: bytes, ad_id: str) -> str:
+    """Save image and return URL or base64 data URI."""
+    # Try to save to disk first
+    if ensure_static_dir():
+        try:
+            filename = f"static/ad_{ad_id}.png"
+            with open(filename, "wb") as f:
+                f.write(image_data)
+            return f"/static/ad_{ad_id}.png"
+        except OSError:
+            pass  # Fall through to base64
+    
+    # Return base64 data URI for read-only filesystems
+    b64 = base64.b64encode(image_data).decode('utf-8')
+    return f"data:image/png;base64,{b64}"
+
+
+def save_pil_image(image, ad_id: str) -> str:
+    """Save PIL image and return URL or base64 data URI."""
+    # Save to bytes first
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    image_data = buffer.getvalue()
+    return save_image(image_data, ad_id)
+
+
+def download_image(url: str):  # type: ignore[return]
     """Download image from URL and return PIL Image."""
     try:
         headers = {
@@ -76,7 +107,7 @@ def download_image(url: str) -> Optional[Image.Image]:
         return None
 
 
-def create_gradient_overlay(image: Image.Image, position: str = "bottom", opacity: float = 0.7) -> Image.Image:
+def create_gradient_overlay(image, position: str = "bottom", opacity: float = 0.7):
     """Create a gradient overlay for text readability."""
     width, height = image.size
     overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
@@ -97,13 +128,7 @@ def create_gradient_overlay(image: Image.Image, position: str = "bottom", opacit
     return Image.alpha_composite(image.convert('RGBA'), overlay)
 
 
-def add_text_overlay(
-    image,
-    headline: str,
-    subhead: str = "",
-    cta: str = "",
-    style: str = "bottom"
-):
+def add_text_overlay(image, headline: str, subhead: str = "", cta: str = "", style: str = "bottom"):
     """Add text overlay to an image."""
     if not PIL_AVAILABLE:
         print("Warning: PIL not available, returning image without text overlay")
@@ -341,10 +366,7 @@ def generate_competitor_based(
             )
             
             # Save image
-            filename = f"static/ad_{ad['id']}.png"
-            image.save(filename, "PNG")
-            
-            ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            ad["image_url"] = save_pil_image(image, ad['id'])
             
         except Exception as e:
             print(f"Error generating competitor image for {ad['id']}: {e}")
@@ -423,10 +445,7 @@ def generate_stock_based(ad_variations: list[dict], product_info: dict) -> list[
             )
             
             # Save image
-            filename = f"static/ad_{ad['id']}.png"
-            image.save(filename, "PNG")
-            
-            ad["image_url"] = f"/static/ad_{ad['id']}.png"
+            ad["image_url"] = save_pil_image(image, ad['id'])
             
         except Exception as e:
             print(f"Error generating stock image for {ad['id']}: {e}")
@@ -493,11 +512,8 @@ High quality, crisp details, professional advertising photography."""
             image_data = provider.generate_image(prompt)
             
             if image_data:
-                # Save raw image bytes directly without PIL processing
-                filename = f"static/ad_{ad['id']}.png"
-                with open(filename, "wb") as f:
-                    f.write(image_data)
-                ad["image_url"] = f"/static/ad_{ad['id']}.png"
+                # Save image (to disk if possible, otherwise base64)
+                ad["image_url"] = save_image(image_data, ad['id'])
                 print(f"Saved image for ad {ad['id']}")
             else:
                 print(f"No image data returned for ad {ad['id']}")
@@ -604,11 +620,8 @@ High quality, crisp details, 1:1 aspect ratio."""
             )
             
             # Save image
-            filename = f"static/ad_{ad['id']}.png"
-            image.save(filename, "PNG")
-            
-            ad["image_url"] = f"/static/ad_{ad['id']}.png"
-            print(f"Saved image for ad {ad['id']} to {filename}")
+            ad["image_url"] = save_pil_image(image, ad['id'])
+            print(f"Saved image for ad {ad['id']}")
             
         except Exception as e:
             print(f"Error generating AI image for {ad['id']}: {e}")
